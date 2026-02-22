@@ -12,11 +12,13 @@ import {
   getExchangeStats,
   saveSalaryExchange,
   markMonthAsExchanged,
+  resetMonthExchange,
+  saveRate,
   setSetting,
   getSetting,
   getDailyRates,
 } from "./database";
-import { fetchCurrentRate } from "./exchange";
+import { fetchCurrentRate, fetchHistoricalRate } from "./exchange";
 import { analyzeTrend, formatTrendMessage } from "./stats";
 import { getCurrentMonth } from "./config";
 
@@ -39,15 +41,17 @@ export function createBot(config: BotConfig): Bot {
       `Te ayudo a encontrar el mejor momento para cambiar tu sueldo de USD a MXN.\n\n` +
       `*Comandos disponibles:*\n` +
       `/status - Tasa actual, tendencia y recomendación\n` +
-      `/changed <tasa> - Registrar que cambiaste tu sueldo\n` +
+      `/refresh - Consultar tasa ahora mismo\n` +
+      `/changed <tasa> [monto] [YYYY-MM] - Registrar cambio\n` +
+      `/reset - Reactivar alertas del mes actual\n` +
+      `/seed [días] - Cargar datos históricos\n` +
       `/history - Historial de cambios\n` +
       `/stats - Estadísticas acumuladas\n` +
       `/month - Resumen del mes actual\n` +
       `/config - Ver configuración actual\n` +
-      `/set\\_threshold <porcentaje> - Cambiar umbral de alerta\n` +
-      `/set\\_commission <monto> - Cambiar comisión por dólar\n` +
-      `/set\\_salary <monto> - Cambiar monto de sueldo en USD\n` +
-      `/refresh - Consultar tasa ahora mismo\n` +
+      `/set\\_threshold <pct> - Cambiar umbral de alerta\n` +
+      `/set\\_commission <monto> - Cambiar comisión/dólar\n` +
+      `/set\\_salary <monto> - Cambiar sueldo en USD\n` +
       `/help - Mostrar esta ayuda`,
       { parse_mode: "Markdown" }
     );
@@ -58,15 +62,17 @@ export function createBot(config: BotConfig): Bot {
       `🤑 *Dollar Check Bot - Ayuda*\n\n` +
       `*Comandos disponibles:*\n` +
       `/status - Tasa actual, tendencia y recomendación\n` +
-      `/changed <tasa> - Registrar que cambiaste tu sueldo\n` +
+      `/refresh - Consultar tasa ahora mismo\n` +
+      `/changed <tasa> [monto] [YYYY-MM] - Registrar cambio\n` +
+      `/reset - Reactivar alertas del mes actual\n` +
+      `/seed [días] - Cargar datos históricos\n` +
       `/history - Historial de cambios\n` +
       `/stats - Estadísticas acumuladas\n` +
       `/month - Resumen del mes actual\n` +
       `/config - Ver configuración actual\n` +
-      `/set\\_threshold <porcentaje> - Cambiar umbral de alerta\n` +
-      `/set\\_commission <monto> - Cambiar comisión por dólar\n` +
-      `/set\\_salary <monto> - Cambiar monto de sueldo en USD\n` +
-      `/refresh - Consultar tasa ahora mismo\n` +
+      `/set\\_threshold <pct> - Cambiar umbral de alerta\n` +
+      `/set\\_commission <monto> - Cambiar comisión/dólar\n` +
+      `/set\\_salary <monto> - Cambiar sueldo en USD\n` +
       `/help - Mostrar esta ayuda`,
       { parse_mode: "Markdown" }
     );
@@ -122,16 +128,22 @@ export function createBot(config: BotConfig): Bot {
     }
   });
 
-  // ---- /changed <rate> [amount_usd] ----
+  // ---- /changed <rate> [amount_usd] [YYYY-MM] ----
   bot.command("changed", async (ctx) => {
     const args = ctx.message?.text?.split(" ").slice(1) || [];
     const rate = parseFloat(args[0]);
     const amountUsd = parseFloat(args[1]) || config.default_salary_usd;
+    // Optional month: if 3rd arg looks like YYYY-MM, use it
+    const monthArg = args[2] && /^\d{4}-\d{2}$/.test(args[2]) ? args[2] : null;
+    const targetMonth = monthArg || getCurrentMonth();
+    const isCurrentMonth = targetMonth === getCurrentMonth();
 
     if (isNaN(rate) || rate <= 0) {
       await ctx.reply(
-        "Uso: `/changed <tasa> [monto_usd]`\n" +
-        "Ejemplo: `/changed 17.30` o `/changed 17.30 6000`",
+        "Uso: `/changed <tasa> [monto_usd] [YYYY-MM]`\n" +
+        "Ejemplos:\n" +
+        "  `/changed 17.30` → registra cambio este mes\n" +
+        "  `/changed 17.30 6000 2026-01` → registra cambio de enero",
         { parse_mode: "Markdown" }
       );
       return;
@@ -147,20 +159,82 @@ export function createBot(config: BotConfig): Bot {
       commission_per_dollar: config.default_commission,
       effective_rate: effectiveRate,
       exchanged_at: new Date().toISOString(),
-      month: getCurrentMonth(),
+      month: targetMonth,
       notes: undefined,
     });
 
-    markMonthAsExchanged(effectiveRate);
+    // Only pause alerts if registering current month
+    if (isCurrentMonth) {
+      markMonthAsExchanged(effectiveRate, targetMonth);
+    } else {
+      markMonthAsExchanged(effectiveRate, targetMonth);
+    }
+
+    let statusMsg = isCurrentMonth
+      ? `Alertas pausadas hasta el próximo mes. 🔕`
+      : `📝 Registrado para ${targetMonth}. Alertas de este mes siguen activas. ✅`;
 
     await ctx.reply(
-      `✅ *Cambio registrado*\n\n` +
+      `✅ *Cambio registrado (${targetMonth})*\n\n` +
       `Tasa: $${rate.toFixed(4)}\n` +
       `Comisión: -$${config.default_commission.toFixed(2)}/USD\n` +
       `Tasa efectiva: $${effectiveRate.toFixed(4)}\n` +
       `Monto: $${amountUsd.toLocaleString()} USD\n` +
       `Recibiste: $${amountMxn.toLocaleString("es-MX", { minimumFractionDigits: 2 })} MXN\n\n` +
-      `Alertas pausadas hasta el próximo mes. 🔕`,
+      statusMsg,
+      { parse_mode: "Markdown" }
+    );
+  });
+
+  // ---- /reset ----
+  bot.command("reset", async (ctx) => {
+    resetMonthExchange();
+    await ctx.reply(
+      `🔔 *Alertas reactivadas*\n\n` +
+      `El mes actual (${getCurrentMonth()}) está marcado como pendiente de cambio.\n` +
+      `El bot volverá a enviarte alertas.`,
+      { parse_mode: "Markdown" }
+    );
+  });
+
+  // ---- /seed [days] ----
+  bot.command("seed", async (ctx) => {
+    const days = parseInt(ctx.message?.text?.split(" ")[1] || "30");
+
+    if (isNaN(days) || days <= 0 || days > 365) {
+      await ctx.reply("Uso: `/seed [días]`\nEjemplo: `/seed 30` (default: 30, max: 365)", { parse_mode: "Markdown" });
+      return;
+    }
+
+    await ctx.reply(`🌱 Descargando datos históricos de ${days} días...`);
+
+    let loaded = 0;
+    let errors = 0;
+
+    for (let i = days; i >= 1; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split("T")[0]; // YYYY-MM-DD
+      const timestamp = Math.floor(date.getTime() / 1000);
+
+      try {
+        const rate = await fetchHistoricalRate(config.oxr_app_id, dateStr);
+        saveRate(rate, timestamp, "openexchangerates-historical");
+        loaded++;
+      } catch (error) {
+        errors++;
+        console.error(`[Seed] Failed to fetch ${dateStr}:`, error);
+      }
+
+      // Rate limit: small delay between requests
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    await ctx.reply(
+      `✅ *Seed completado*\n\n` +
+      `Días cargados: ${loaded}\n` +
+      `Errores: ${errors}\n\n` +
+      `Ahora /status y /month tienen contexto histórico.`,
       { parse_mode: "Markdown" }
     );
   });

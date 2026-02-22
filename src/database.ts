@@ -247,15 +247,35 @@ export function getMonthlyState(): MonthlyState {
   };
 }
 
-export function markMonthAsExchanged(rate: number): void {
-  const month = getCurrentMonth();
+export function markMonthAsExchanged(rate: number, month?: string): void {
+  const targetMonth = month || getCurrentMonth();
+
+  // Ensure the monthly_state row exists
+  getDb()
+    .prepare(`
+      INSERT OR IGNORE INTO monthly_state (current_month, is_exchanged, last_exchange_rate, last_exchange_date)
+      VALUES (?, 0, 0, '')
+    `)
+    .run(targetMonth);
+
   getDb()
     .prepare(`
       UPDATE monthly_state
       SET is_exchanged = 1, last_exchange_rate = ?, last_exchange_date = datetime('now')
       WHERE current_month = ?
     `)
-    .run(rate, month);
+    .run(rate, targetMonth);
+}
+
+export function resetMonthExchange(): void {
+  const month = getCurrentMonth();
+  getDb()
+    .prepare(`
+      UPDATE monthly_state
+      SET is_exchanged = 0
+      WHERE current_month = ?
+    `)
+    .run(month);
 }
 
 // ---- Settings ----
