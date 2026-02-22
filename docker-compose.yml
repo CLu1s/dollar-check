@@ -1,0 +1,11 @@
+services:
+  dollar-check:
+    build: .
+    container_name: dollar-check-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=America/Mexico_City

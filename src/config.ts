@@ -1,0 +1,49 @@
+// ============================================
+// Dollar Check Bot - Configuration
+// ============================================
+
+import type { BotConfig } from "./types";
+
+function requireEnv(key: string): string {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
+
+function optionalEnv(key: string, fallback: string): string {
+  return process.env[key] || fallback;
+}
+
+export function loadConfig(): BotConfig {
+  return {
+    telegram_bot_token: requireEnv("TELEGRAM_BOT_TOKEN"),
+    telegram_chat_id: requireEnv("TELEGRAM_CHAT_ID"),
+    oxr_app_id: requireEnv("OXR_APP_ID"),
+    poll_interval_minutes: parseInt(optionalEnv("POLL_INTERVAL_MINUTES", "60")),
+    alert_threshold_percent: parseFloat(optionalEnv("ALERT_THRESHOLD_PERCENT", "0.15")),
+    trend_decline_days: parseInt(optionalEnv("TREND_DECLINE_DAYS", "3")),
+    salary_day: parseInt(optionalEnv("SALARY_DAY", "0")), // 0 = last day
+    timezone: optionalEnv("TZ", "America/Mexico_City"),
+    default_salary_usd: parseFloat(optionalEnv("DEFAULT_SALARY_USD", "6000")),
+    default_commission: parseFloat(optionalEnv("DEFAULT_COMMISSION", "0.10")),
+  };
+}
+
+export function isLastWeekOfMonth(): boolean {
+  const now = new Date();
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return now.getDate() >= lastDay - 7;
+}
+
+export function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function isLastDayOfMonth(): boolean {
+  const now = new Date();
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return now.getDate() === lastDay;
+}

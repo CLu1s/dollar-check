@@ -1,0 +1,17 @@
+{
+  "name": "dollar-check",
+  "version": "1.0.0",
+  "description": "USD/MXN exchange rate monitor with Telegram alerts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "db:reset": "rm -f data/dollar-check.db && bun run src/index.ts"
+  },
+  "dependencies": {
+    "grammy": "^1.21.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
