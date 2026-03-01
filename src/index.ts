@@ -21,8 +21,11 @@ console.log("✅ Database initialized");
 const savedThreshold = getSetting("alert_threshold_percent");
 if (savedThreshold) config.alert_threshold_percent = parseFloat(savedThreshold);
 
-const savedCommission = getSetting("default_commission");
-if (savedCommission) config.default_commission = parseFloat(savedCommission);
+const savedSpread = getSetting("default_spread_percent");
+if (savedSpread) config.default_spread_percent = parseFloat(savedSpread);
+
+const savedFee = getSetting("default_fee_usd");
+if (savedFee) config.default_fee_usd = parseFloat(savedFee);
 
 const savedSalary = getSetting("default_salary_usd");
 if (savedSalary) config.default_salary_usd = parseFloat(savedSalary);
@@ -66,7 +69,7 @@ bot.start({
     console.log(`📡 Polling OXR every ${config.poll_interval_minutes}min`);
     console.log(`⚡ Alert threshold: ${config.alert_threshold_percent}%`);
     console.log(`💰 Salary: $${config.default_salary_usd} USD`);
-    console.log(`💸 Commission: $${config.default_commission}/USD`);
+    console.log(`💸 Deel spread: ${config.default_spread_percent}% | Tarifa: $${config.default_fee_usd} USD`);
   },
 });
 

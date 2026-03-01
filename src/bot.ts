@@ -2,8 +2,9 @@
 // Dollar Check Bot - Telegram Bot Commands
 // ============================================
 
-import { Bot, type Context } from "grammy";
+import { Bot } from "grammy";
 import type { BotConfig } from "./types";
+import { estimateDeelMxn } from "./types";
 import {
   getLatestRate,
   getMonthlyState,
@@ -15,12 +16,28 @@ import {
   resetMonthExchange,
   saveRate,
   setSetting,
-  getSetting,
   getDailyRates,
 } from "./database";
 import { fetchCurrentRate, fetchHistoricalRate } from "./exchange";
 import { analyzeTrend, formatTrendMessage } from "./stats";
 import { getCurrentMonth } from "./config";
+
+const HELP_TEXT =
+  `*Comandos disponibles:*\n` +
+  `/status - Tasa actual, tendencia y recomendación\n` +
+  `/refresh - Consultar tasa ahora mismo\n` +
+  `/changed <tasa> <bruto\\_usd> <mxn> <tarifa> [YYYY-MM] - Registrar cambio\n` +
+  `/reset - Reactivar alertas del mes actual\n` +
+  `/seed [días] - Cargar datos históricos\n` +
+  `/history - Historial de cambios\n` +
+  `/stats - Estadísticas acumuladas\n` +
+  `/month - Resumen del mes actual\n` +
+  `/config - Ver configuración actual\n` +
+  `/set\\_spread <pct> - Cambiar spread de Deel\n` +
+  `/set\\_fee <monto> - Cambiar tarifa Deel en USD\n` +
+  `/set\\_salary <monto> - Cambiar sueldo bruto en USD\n` +
+  `/set\\_threshold <pct> - Cambiar umbral de alerta\n` +
+  `/help - Mostrar esta ayuda`;
 
 export function createBot(config: BotConfig): Bot {
   const bot = new Bot(config.telegram_bot_token);
@@ -38,44 +55,14 @@ export function createBot(config: BotConfig): Bot {
   bot.command("start", async (ctx) => {
     await ctx.reply(
       `🤑 *Dollar Check Bot*\n\n` +
-      `Te ayudo a encontrar el mejor momento para cambiar tu sueldo de USD a MXN.\n\n` +
-      `*Comandos disponibles:*\n` +
-      `/status - Tasa actual, tendencia y recomendación\n` +
-      `/refresh - Consultar tasa ahora mismo\n` +
-      `/changed <tasa> [monto] [YYYY-MM] - Registrar cambio\n` +
-      `/reset - Reactivar alertas del mes actual\n` +
-      `/seed [días] - Cargar datos históricos\n` +
-      `/history - Historial de cambios\n` +
-      `/stats - Estadísticas acumuladas\n` +
-      `/month - Resumen del mes actual\n` +
-      `/config - Ver configuración actual\n` +
-      `/set\\_threshold <pct> - Cambiar umbral de alerta\n` +
-      `/set\\_commission <monto> - Cambiar comisión/dólar\n` +
-      `/set\\_salary <monto> - Cambiar sueldo en USD\n` +
-      `/help - Mostrar esta ayuda`,
+      `Te ayudo a encontrar el mejor momento para cambiar tu sueldo de USD a MXN vía Deel.\n\n` +
+      HELP_TEXT,
       { parse_mode: "Markdown" }
     );
   });
 
   bot.command("help", async (ctx) => {
-    await ctx.api.sendMessage(ctx.chat!.id,
-      `🤑 *Dollar Check Bot - Ayuda*\n\n` +
-      `*Comandos disponibles:*\n` +
-      `/status - Tasa actual, tendencia y recomendación\n` +
-      `/refresh - Consultar tasa ahora mismo\n` +
-      `/changed <tasa> [monto] [YYYY-MM] - Registrar cambio\n` +
-      `/reset - Reactivar alertas del mes actual\n` +
-      `/seed [días] - Cargar datos históricos\n` +
-      `/history - Historial de cambios\n` +
-      `/stats - Estadísticas acumuladas\n` +
-      `/month - Resumen del mes actual\n` +
-      `/config - Ver configuración actual\n` +
-      `/set\\_threshold <pct> - Cambiar umbral de alerta\n` +
-      `/set\\_commission <monto> - Cambiar comisión/dólar\n` +
-      `/set\\_salary <monto> - Cambiar sueldo en USD\n` +
-      `/help - Mostrar esta ayuda`,
-      { parse_mode: "Markdown" }
-    );
+    await ctx.reply(`🤑 *Dollar Check Bot - Ayuda*\n\n` + HELP_TEXT, { parse_mode: "Markdown" });
   });
 
   // ---- /status ----
@@ -91,7 +78,7 @@ export function createBot(config: BotConfig): Bot {
     }
 
     const lastRate = lastExchange?.effective_rate || 0;
-    let msg = formatTrendMessage(trend, latestRate.rate, lastRate, config.default_commission);
+    let msg = formatTrendMessage(trend, latestRate.rate, lastRate, config);
 
     if (monthlyState.is_exchanged) {
       msg += `\n\n✅ Ya cambiaste tu sueldo este mes. Alertas pausadas.`;
@@ -107,20 +94,27 @@ export function createBot(config: BotConfig): Bot {
     try {
       await ctx.reply("🔄 Consultando tasa actual...");
       const rate = await fetchCurrentRate(config.oxr_app_id);
-      const effectiveRate = rate - config.default_commission;
+
+      const estimated = estimateDeelMxn(
+        rate,
+        config.default_salary_usd,
+        config.default_spread_percent,
+        config.default_fee_usd
+      );
 
       const lastExchange = getLastSalaryExchange();
-      const lastRate = lastExchange?.effective_rate || 0;
       let diff = "";
-      if (lastRate > 0) {
-        const change = effectiveRate - lastRate;
-        const pct = ((change / lastRate) * 100).toFixed(2);
-        const impact = (change * config.default_salary_usd).toFixed(0);
-        diff = `\nVs último cambio: ${change >= 0 ? "+" : ""}${change.toFixed(4)} (${pct}%) → ${change >= 0 ? "+" : ""}$${impact} MXN`;
+      if (lastExchange) {
+        const lastMxn = lastExchange.amount_mxn;
+        const mxnDiff = estimated.mxnReceived - lastMxn;
+        diff = `\nVs último cambio: ${mxnDiff >= 0 ? "+" : ""}$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN`;
       }
 
       await ctx.reply(
-        `💱 *Tasa actual*\nUSD/MXN: $${rate.toFixed(4)}\nEfectiva: $${effectiveRate.toFixed(4)}${diff}`,
+        `💱 *Tasa actual*\n` +
+        `Mercado: $${rate.toFixed(4)}\n` +
+        `Deel estimada: $${estimated.deelRate.toFixed(4)}\n` +
+        `Recibirías: ~$${estimated.mxnReceived.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN${diff}`,
         { parse_mode: "Markdown" }
       );
     } catch (error) {
@@ -128,47 +122,64 @@ export function createBot(config: BotConfig): Bot {
     }
   });
 
-  // ---- /changed <rate> [amount_usd] [YYYY-MM] ----
+  // ---- /changed <tasa_deel> <bruto_usd> <mxn_recibido> <tarifa_usd> [YYYY-MM] ----
   bot.command("changed", async (ctx) => {
     const args = ctx.message?.text?.split(" ").slice(1) || [];
-    const rate = parseFloat(args[0]);
-    const amountUsd = parseFloat(args[1]) || config.default_salary_usd;
-    // Optional month: if 3rd arg looks like YYYY-MM, use it
-    const monthArg = args[2] && /^\d{4}-\d{2}$/.test(args[2]) ? args[2] : null;
-    const targetMonth = monthArg || getCurrentMonth();
-    const isCurrentMonth = targetMonth === getCurrentMonth();
 
-    if (isNaN(rate) || rate <= 0) {
+    if (args.length < 4) {
       await ctx.reply(
-        "Uso: `/changed <tasa> [monto_usd] [YYYY-MM]`\n" +
-        "Ejemplos:\n" +
-        "  `/changed 17.30` → registra cambio este mes\n" +
-        "  `/changed 17.30 6000 2026-01` → registra cambio de enero",
+        "Uso: `/changed <tasa> <bruto_usd> <mxn> <tarifa> [YYYY-MM]`\n\n" +
+        "Ingresa los datos tal como aparecen en Deel:\n" +
+        "  `tasa` → Tasa de cambio ($1.00 = X MXN)\n" +
+        "  `bruto_usd` → Tu sueldo bruto en USD\n" +
+        "  `mxn` → Monto a recibir en MXN\n" +
+        "  `tarifa` → Tarifa de cambio en USD\n\n" +
+        "Ejemplo:\n" +
+        "  `/changed 17.25 6097.24 103333.04 106.65`\n" +
+        "  `/changed 17.25 6097.24 103333.04 106.65 2026-02` → mes pasado",
         { parse_mode: "Markdown" }
       );
       return;
     }
 
-    const effectiveRate = rate - config.default_commission;
-    const amountMxn = amountUsd * effectiveRate;
+    const deelRate = parseFloat(args[0]);
+    const grossUsd = parseFloat(args[1]);
+    const amountMxn = parseFloat(args[2]);
+    const feeUsd = parseFloat(args[3]);
+
+    if ([deelRate, grossUsd, amountMxn, feeUsd].some((v) => isNaN(v) || v <= 0)) {
+      await ctx.reply("❌ Todos los valores deben ser números positivos.");
+      return;
+    }
+
+    // 5th arg: optional YYYY-MM
+    const monthArg = (args[4] && /^\d{4}-\d{2}$/.test(args[4])) ? args[4] : null;
+
+    const targetMonth = monthArg || getCurrentMonth();
+    const isCurrentMonth = targetMonth === getCurrentMonth();
+    const netUsd = grossUsd - feeUsd;
+    const effectiveRate = amountMxn / netUsd;
+
+    // Get market rate from bot's data for spread calculation
+    const latestRate = getLatestRate();
+    const marketRate = latestRate?.rate || deelRate;
+    const actualSpread = marketRate > 0 ? ((marketRate - deelRate) / marketRate) * 100 : config.default_spread_percent;
 
     saveSalaryExchange({
-      rate,
-      amount_usd: amountUsd,
+      rate: marketRate,
+      deel_rate: deelRate,
+      gross_usd: grossUsd,
+      fee_usd: feeUsd,
+      amount_usd: netUsd,
       amount_mxn: amountMxn,
-      commission_per_dollar: config.default_commission,
+      spread_percent: actualSpread,
       effective_rate: effectiveRate,
       exchanged_at: new Date().toISOString(),
       month: targetMonth,
       notes: undefined,
     });
 
-    // Only pause alerts if registering current month
-    if (isCurrentMonth) {
-      markMonthAsExchanged(effectiveRate, targetMonth);
-    } else {
-      markMonthAsExchanged(effectiveRate, targetMonth);
-    }
+    markMonthAsExchanged(effectiveRate, targetMonth);
 
     let statusMsg = isCurrentMonth
       ? `Alertas pausadas hasta el próximo mes. 🔕`
@@ -176,11 +187,13 @@ export function createBot(config: BotConfig): Bot {
 
     await ctx.reply(
       `✅ *Cambio registrado (${targetMonth})*\n\n` +
-      `Tasa: $${rate.toFixed(4)}\n` +
-      `Comisión: -$${config.default_commission.toFixed(2)}/USD\n` +
-      `Tasa efectiva: $${effectiveRate.toFixed(4)}\n` +
-      `Monto: $${amountUsd.toLocaleString()} USD\n` +
-      `Recibiste: $${amountMxn.toLocaleString("es-MX", { minimumFractionDigits: 2 })} MXN\n\n` +
+      `Tasa mercado: $${marketRate.toFixed(4)}\n` +
+      `Tasa Deel: $${deelRate.toFixed(4)} (spread: ${actualSpread.toFixed(2)}%)\n` +
+      `Bruto: $${grossUsd.toLocaleString()} USD\n` +
+      `Tarifa Deel: $${feeUsd.toFixed(2)} USD\n` +
+      `Neto convertido: $${netUsd.toLocaleString()} USD\n` +
+      `Recibiste: $${amountMxn.toLocaleString("es-MX", { minimumFractionDigits: 2 })} MXN\n` +
+      `Tasa efectiva: $${effectiveRate.toFixed(4)}/USD\n\n` +
       statusMsg,
       { parse_mode: "Markdown" }
     );
@@ -214,7 +227,7 @@ export function createBot(config: BotConfig): Bot {
     for (let i = days; i >= 1; i--) {
       const date = new Date();
       date.setDate(date.getDate() - i);
-      const dateStr = date.toISOString().split("T")[0]; // YYYY-MM-DD
+      const dateStr = date.toISOString().split("T")[0];
       const timestamp = Math.floor(date.getTime() / 1000);
 
       try {
@@ -226,7 +239,6 @@ export function createBot(config: BotConfig): Bot {
         console.error(`[Seed] Failed to fetch ${dateStr}:`, error);
       }
 
-      // Rate limit: small delay between requests
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
@@ -249,11 +261,8 @@ export function createBot(config: BotConfig): Bot {
     }
 
     let msg = `📊 *Historial de cambios*\n\n`;
-    msg += `| Mes | Tasa Ef. | MXN Recibido |\n`;
-    msg += `|-----|----------|-------------|\n`;
-
     for (const ex of history) {
-      msg += `| ${ex.month} | $${ex.effective_rate.toFixed(2)} | $${ex.amount_mxn.toLocaleString("es-MX", { maximumFractionDigits: 0 })} |\n`;
+      msg += `*${ex.month}*: $${ex.deel_rate.toFixed(2)} → $${ex.amount_mxn.toLocaleString("es-MX", { maximumFractionDigits: 0 })} MXN ($${ex.amount_usd.toLocaleString()} USD)\n`;
     }
 
     await ctx.reply(msg, { parse_mode: "Markdown" });
@@ -273,7 +282,7 @@ export function createBot(config: BotConfig): Bot {
     await ctx.reply(
       `📈 *Estadísticas acumuladas*\n\n` +
       `Total de cambios: ${stats.total_exchanges}\n` +
-      `Tasa promedio efectiva: $${stats.avg_rate.toFixed(4)}\n` +
+      `Tasa efectiva promedio: $${stats.avg_rate.toFixed(4)}/USD\n` +
       `Mejor tasa: $${stats.best_rate.toFixed(4)} (${stats.best_month})\n` +
       `Peor tasa: $${stats.worst_rate.toFixed(4)} (${stats.worst_month})\n\n` +
       `Total USD cambiados: $${stats.total_usd_exchanged.toLocaleString()}\n` +
@@ -299,12 +308,15 @@ export function createBot(config: BotConfig): Bot {
     const max = Math.max(...rates);
     const avg = rates.reduce((s, r) => s + r, 0) / rates.length;
 
+    const estMin = estimateDeelMxn(min, config.default_salary_usd, config.default_spread_percent, config.default_fee_usd);
+    const estMax = estimateDeelMxn(max, config.default_salary_usd, config.default_spread_percent, config.default_fee_usd);
+
     let msg = `📅 *Resumen del mes (${monthlyState.current_month})*\n\n`;
     msg += `Días con datos: ${dailyRates.length}\n`;
     msg += `Tasa promedio: $${avg.toFixed(4)}\n`;
-    msg += `Mínima: $${min.toFixed(4)}\n`;
-    msg += `Máxima: $${max.toFixed(4)}\n`;
-    msg += `Rango: $${(max - min).toFixed(4)}\n\n`;
+    msg += `Mínima: $${min.toFixed(4)} (~$${estMin.mxnReceived.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)\n`;
+    msg += `Máxima: $${max.toFixed(4)} (~$${estMax.mxnReceived.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)\n`;
+    msg += `Rango: $${(max - min).toFixed(4)} (~$${(estMax.mxnReceived - estMin.mxnReceived).toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)\n\n`;
     msg += monthlyState.is_exchanged
       ? `✅ Sueldo ya cambiado este mes`
       : `⏳ Sueldo pendiente de cambiar`;
@@ -316,10 +328,11 @@ export function createBot(config: BotConfig): Bot {
   bot.command("config", async (ctx) => {
     await ctx.reply(
       `⚙️ *Configuración actual*\n\n` +
+      `Sueldo bruto: $${config.default_salary_usd.toLocaleString()} USD\n` +
+      `Spread Deel: ${config.default_spread_percent}%\n` +
+      `Tarifa Deel: $${config.default_fee_usd} USD\n` +
       `Umbral de alerta: ${config.alert_threshold_percent}%\n` +
       `Días para tendencia bajista: ${config.trend_decline_days}\n` +
-      `Comisión por dólar: $${config.default_commission.toFixed(2)}\n` +
-      `Sueldo base: $${config.default_salary_usd.toLocaleString()} USD\n` +
       `Intervalo de polling: ${config.poll_interval_minutes} min\n` +
       `Día de pago: Último día del mes`,
       { parse_mode: "Markdown" }
@@ -338,23 +351,35 @@ export function createBot(config: BotConfig): Bot {
     await ctx.reply(`✅ Umbral actualizado a ${value}%`);
   });
 
-  // ---- /set_commission <amount> ----
-  bot.command("set_commission", async (ctx) => {
+  // ---- /set_spread <percent> ----
+  bot.command("set_spread", async (ctx) => {
     const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
-    if (isNaN(value) || value < 0) {
-      await ctx.reply("Uso: `/set_commission 0.10` (pesos por dólar)", { parse_mode: "Markdown" });
+    if (isNaN(value) || value < 0 || value > 10) {
+      await ctx.reply("Uso: `/set_spread 0.75` (porcentaje que cobra Deel)", { parse_mode: "Markdown" });
       return;
     }
-    config.default_commission = value;
-    setSetting("default_commission", value.toString());
-    await ctx.reply(`✅ Comisión actualizada a $${value.toFixed(2)}/USD`);
+    config.default_spread_percent = value;
+    setSetting("default_spread_percent", value.toString());
+    await ctx.reply(`✅ Spread de Deel actualizado a ${value}%`);
+  });
+
+  // ---- /set_fee <amount> ----
+  bot.command("set_fee", async (ctx) => {
+    const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
+    if (isNaN(value) || value < 0) {
+      await ctx.reply("Uso: `/set_fee 106.65` (tarifa de cambio en USD)", { parse_mode: "Markdown" });
+      return;
+    }
+    config.default_fee_usd = value;
+    setSetting("default_fee_usd", value.toString());
+    await ctx.reply(`✅ Tarifa Deel actualizada a $${value.toFixed(2)} USD`);
   });
 
   // ---- /set_salary <amount> ----
   bot.command("set_salary", async (ctx) => {
     const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
     if (isNaN(value) || value <= 0) {
-      await ctx.reply("Uso: `/set_salary 6000` (dólares)", { parse_mode: "Markdown" });
+      await ctx.reply("Uso: `/set_salary 6097.24` (dólares brutos)", { parse_mode: "Markdown" });
       return;
     }
     config.default_salary_usd = value;

@@ -6,6 +6,7 @@ import { getLatestRate, getMonthlyState, getLastSalaryExchange } from "./databas
 import { analyzeTrend, formatTrendMessage } from "./stats";
 import { isLastWeekOfMonth } from "./config";
 import type { AlertCondition, BotConfig } from "./types";
+import { estimateDeelMxn } from "./types";
 
 export interface AlertResult {
   shouldNotify: boolean;
@@ -24,14 +25,11 @@ export function evaluateAlerts(config: BotConfig): AlertResult {
 
   const alerts: AlertCondition[] = [];
 
-  // If no rate data, nothing to evaluate
   if (!latestRate) {
     return { shouldNotify: false, alerts: [], fullMessage: "" };
   }
 
   const currentRate = latestRate.rate;
-  const effectiveRate = currentRate - config.default_commission;
-  const lastExchangeRate = lastExchange?.effective_rate || 0;
 
   // ---- Skip if already exchanged this month ----
   if (monthlyState.is_exchanged) {
@@ -42,53 +40,70 @@ export function evaluateAlerts(config: BotConfig): AlertResult {
     };
   }
 
-  // ---- Threshold UP: Rate is better than last exchange ----
-  if (lastExchangeRate > 0) {
-    const changePercent = ((effectiveRate - lastExchangeRate) / lastExchangeRate) * 100;
+  // Estimate what you'd get today with Deel
+  const estimated = estimateDeelMxn(
+    currentRate,
+    config.default_salary_usd,
+    config.default_spread_percent,
+    config.default_fee_usd
+  );
 
-    if (changePercent >= config.alert_threshold_percent) {
-      const impactMxn = (effectiveRate - lastExchangeRate) * config.default_salary_usd;
+  // What you got last time
+  const lastMxn = lastExchange ? lastExchange.amount_mxn : 0;
+  const lastEffectiveRate = lastExchange?.effective_rate || 0;
+  const mxnDiff = lastMxn > 0 ? estimated.mxnReceived - lastMxn : 0;
+  const mxnDiffPercent = lastMxn > 0 ? (mxnDiff / lastMxn) * 100 : 0;
+
+  // ---- Threshold UP: You'd get more MXN than last time ----
+  if (lastMxn > 0 && mxnDiff > 0) {
+    // Convert threshold % to minimum MXN gain
+    const minGainMxn = lastMxn * (config.alert_threshold_percent / 100);
+
+    if (mxnDiff >= minGainMxn) {
       alerts.push({
         type: "threshold_up",
         triggered: true,
         message:
-          `📈 *¡Dólar arriba!*\n` +
-          `Tasa efectiva: $${effectiveRate.toFixed(4)} vs último cambio $${lastExchangeRate.toFixed(4)}\n` +
-          `Mejora: +${changePercent.toFixed(2)}% → +$${impactMxn.toFixed(0)} MXN en tu sueldo`,
+          `📈 *¡Recibirías más que el mes pasado!*\n` +
+          `Estimado hoy: $${estimated.mxnReceived.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN\n` +
+          `Último cambio: $${lastMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN\n` +
+          `Diferencia: +$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN (+${mxnDiffPercent.toFixed(2)}%)`,
         rate: currentRate,
-        change_percent: changePercent,
-      });
-    }
-
-    // ---- Threshold DOWN: Sustained decline ----
-    if (
-      trend.direction === "down" &&
-      trend.consecutive_days >= config.trend_decline_days
-    ) {
-      alerts.push({
-        type: "trend_decline",
-        triggered: true,
-        message:
-          `📉 *Tendencia bajista sostenida*\n` +
-          `${trend.consecutive_days} días consecutivos a la baja\n` +
-          `Momentum: ${trend.momentum.toFixed(2)}%\n` +
-          `${effectiveRate > lastExchangeRate
-            ? "Aún estás por encima de tu último cambio, pero la tendencia no es favorable."
-            : "⚠️ Ya estás por debajo de tu último cambio. Considera cambiar pronto."
-          }`,
-        rate: currentRate,
-        change_percent: ((effectiveRate - lastExchangeRate) / lastExchangeRate) * 100,
+        estimated_mxn: estimated.mxnReceived,
+        change_mxn: mxnDiff,
       });
     }
   }
 
-  // ---- Last week of month intensified alerting ----
-  if (isLastWeekOfMonth() && lastExchangeRate > 0) {
-    const changePercent = ((effectiveRate - lastExchangeRate) / lastExchangeRate) * 100;
+  // ---- Trend decline: sustained drop ----
+  if (
+    lastMxn > 0 &&
+    trend.direction === "down" &&
+    trend.consecutive_days >= config.trend_decline_days
+  ) {
+    alerts.push({
+      type: "trend_decline",
+      triggered: true,
+      message:
+        `📉 *Tendencia bajista sostenida*\n` +
+        `${trend.consecutive_days} días consecutivos a la baja\n` +
+        `Momentum: ${trend.momentum.toFixed(2)}%\n` +
+        `${mxnDiff >= 0
+          ? "Aún recibirías más que el mes pasado, pero la tendencia no es favorable."
+          : `⚠️ Recibirías $${Math.abs(mxnDiff).toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN menos que el mes pasado. Considera cambiar pronto.`
+        }`,
+      rate: currentRate,
+      estimated_mxn: estimated.mxnReceived,
+      change_mxn: mxnDiff,
+    });
+  }
 
-    // During last week, lower the threshold
+  // ---- Last week of month: intensified alerting ----
+  if (isLastWeekOfMonth() && lastMxn > 0) {
+    const minGainMxn = lastMxn * (config.alert_threshold_percent * 0.5 / 100);
+
     if (
-      Math.abs(changePercent) >= config.alert_threshold_percent * 0.5 &&
+      Math.abs(mxnDiff) >= minGainMxn &&
       !alerts.some((a) => a.type === "threshold_up")
     ) {
       alerts.push({
@@ -96,10 +111,12 @@ export function evaluateAlerts(config: BotConfig): AlertResult {
         triggered: true,
         message:
           `📅 *Última semana del mes*\n` +
-          `Tu sueldo llega pronto. Tasa efectiva: $${effectiveRate.toFixed(4)}\n` +
-          `vs último cambio: $${lastExchangeRate.toFixed(4)} (${changePercent >= 0 ? "+" : ""}${changePercent.toFixed(2)}%)`,
+          `Tu sueldo llega pronto.\n` +
+          `Estimado hoy: $${estimated.mxnReceived.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN\n` +
+          `Vs último cambio: ${mxnDiff >= 0 ? "+" : ""}$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN`,
         rate: currentRate,
-        change_percent: changePercent,
+        estimated_mxn: estimated.mxnReceived,
+        change_mxn: mxnDiff,
       });
     }
   }
@@ -110,7 +127,7 @@ export function evaluateAlerts(config: BotConfig): AlertResult {
   }
 
   let fullMessage = alerts.map((a) => a.message).join("\n\n---\n\n");
-  fullMessage += `\n\n${formatTrendMessage(trend, currentRate, lastExchangeRate, config.default_commission)}`;
+  fullMessage += `\n\n${formatTrendMessage(trend, currentRate, lastEffectiveRate, config)}`;
 
   return {
     shouldNotify: true,

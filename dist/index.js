@@ -5128,8 +5128,9 @@ function loadConfig() {
     trend_decline_days: parseInt(optionalEnv("TREND_DECLINE_DAYS", "3")),
     salary_day: parseInt(optionalEnv("SALARY_DAY", "0")),
     timezone: optionalEnv("TZ", "America/Mexico_City"),
-    default_salary_usd: parseFloat(optionalEnv("DEFAULT_SALARY_USD", "6000")),
-    default_commission: parseFloat(optionalEnv("DEFAULT_COMMISSION", "0.10"))
+    default_salary_usd: parseFloat(optionalEnv("DEFAULT_SALARY_USD", "5981.52")),
+    default_spread_percent: parseFloat(optionalEnv("DEFAULT_SPREAD_PERCENT", "0.75")),
+    default_fixed_fee_mxn: parseFloat(optionalEnv("DEFAULT_FIXED_FEE_MXN", "106.50"))
   };
 }
 function isLastWeekOfMonth() {
@@ -5166,9 +5167,11 @@ function initDatabase(dbPath = "data/dollar-check.db") {
     CREATE TABLE IF NOT EXISTS salary_exchanges (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       rate REAL NOT NULL,
+      deel_rate REAL NOT NULL DEFAULT 0,
       amount_usd REAL NOT NULL,
       amount_mxn REAL NOT NULL,
-      commission_per_dollar REAL NOT NULL DEFAULT 0.10,
+      spread_percent REAL NOT NULL DEFAULT 0.75,
+      fixed_fee_mxn REAL NOT NULL DEFAULT 106.50,
       effective_rate REAL NOT NULL,
       exchanged_at TEXT NOT NULL DEFAULT (datetime('now')),
       month TEXT NOT NULL,
@@ -5190,6 +5193,15 @@ function initDatabase(dbPath = "data/dollar-check.db") {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN deel_rate REAL NOT NULL DEFAULT 0`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN spread_percent REAL NOT NULL DEFAULT 0.75`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN fixed_fee_mxn REAL NOT NULL DEFAULT 106.50`);
+  } catch (_) {}
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_rates_timestamp
     ON exchange_rates(timestamp DESC)
@@ -5231,9 +5243,9 @@ function getDailyRates(days) {
 function saveSalaryExchange(exchange) {
   getDb().prepare(`
       INSERT INTO salary_exchanges
-        (rate, amount_usd, amount_mxn, commission_per_dollar, effective_rate, exchanged_at, month, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(exchange.rate, exchange.amount_usd, exchange.amount_mxn, exchange.commission_per_dollar, exchange.effective_rate, exchange.exchanged_at, exchange.month, exchange.notes || null);
+        (rate, deel_rate, amount_usd, amount_mxn, spread_percent, fixed_fee_mxn, effective_rate, exchanged_at, month, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(exchange.rate, exchange.deel_rate, exchange.amount_usd, exchange.amount_mxn, exchange.spread_percent, exchange.fixed_fee_mxn, exchange.effective_rate, exchange.exchanged_at, exchange.month, exchange.notes || null);
 }
 function getLastSalaryExchange() {
   return getDb().prepare("SELECT * FROM salary_exchanges ORDER BY exchanged_at DESC LIMIT 1").get();
@@ -5290,13 +5302,25 @@ function getMonthlyState() {
     current_month: state.current_month
   };
 }
-function markMonthAsExchanged(rate) {
-  const month = getCurrentMonth();
+function markMonthAsExchanged(rate, month) {
+  const targetMonth = month || getCurrentMonth();
+  getDb().prepare(`
+      INSERT OR IGNORE INTO monthly_state (current_month, is_exchanged, last_exchange_rate, last_exchange_date)
+      VALUES (?, 0, 0, '')
+    `).run(targetMonth);
   getDb().prepare(`
       UPDATE monthly_state
       SET is_exchanged = 1, last_exchange_rate = ?, last_exchange_date = datetime('now')
       WHERE current_month = ?
-    `).run(rate, month);
+    `).run(rate, targetMonth);
+}
+function resetMonthExchange() {
+  const month = getCurrentMonth();
+  getDb().prepare(`
+      UPDATE monthly_state
+      SET is_exchanged = 0
+      WHERE current_month = ?
+    `).run(month);
 }
 function getSetting(key) {
   const row = getDb().prepare("SELECT value FROM bot_settings WHERE key = ?").get(key);
@@ -5336,6 +5360,24 @@ async function fetchCurrentRate(appId) {
     }
     throw error;
   }
+}
+async function fetchHistoricalRate(appId, date) {
+  const url = `https://openexchangerates.org/api/historical/${date}.json?app_id=${appId}&symbols=MXN`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`OXR historical API error (${response.status})`);
+  }
+  const data = await response.json();
+  return data.rates.MXN;
+}
+
+// src/types.ts
+function estimateDeelMxn(marketRate, salaryUsd, spreadPercent, fixedFeeMxn) {
+  const deelRate = marketRate * (1 - spreadPercent / 100);
+  const grossMxn = salaryUsd * deelRate;
+  const netMxn = grossMxn - fixedFeeMxn;
+  const effectiveRate = netMxn / salaryUsd;
+  return { deelRate, grossMxn, netMxn, effectiveRate };
 }
 
 // src/stats.ts
@@ -5398,7 +5440,7 @@ function consecutiveDirection(dailyRates) {
   }
   return { direction, count };
 }
-function generateRecommendation(currentRate, lastExchangeRate, changePercent, trend, consecutiveDays, momentumValue, volatility, thresholdPercent) {
+function generateRecommendation(currentRate, lastExchangeRate, changePercent, trend, consecutiveDays, momentumValue, _volatility, thresholdPercent) {
   if (lastExchangeRate === 0)
     return "hold";
   const isAboveLastExchange = currentRate > lastExchangeRate;
@@ -5462,10 +5504,8 @@ function analyzeTrend(thresholdPercent) {
     recommendation
   };
 }
-function formatTrendMessage(trend, currentRate, lastExchangeRate, commission) {
-  const effectiveRate = currentRate - commission;
-  const diffFromLast = lastExchangeRate > 0 ? effectiveRate - lastExchangeRate : 0;
-  const diffMxn = diffFromLast * 6000;
+function formatTrendMessage(trend, currentRate, lastEffectiveRate, config) {
+  const estimated = estimateDeelMxn(currentRate, config.default_salary_usd, config.default_spread_percent, config.default_fixed_fee_mxn);
   const dirEmoji = trend.direction === "up" ? "\uD83D\uDCC8" : trend.direction === "down" ? "\uD83D\uDCC9" : "\u27A1\uFE0F";
   const recEmoji = {
     strong_buy: "\uD83D\uDFE2\uD83D\uDFE2",
@@ -5484,17 +5524,21 @@ function formatTrendMessage(trend, currentRate, lastExchangeRate, commission) {
   let msg = `\uD83D\uDCB1 *USD/MXN Status*
 
 `;
-  msg += `Tasa actual: *$${currentRate.toFixed(4)}*
+  msg += `Tasa mercado: *$${currentRate.toFixed(4)}*
 `;
-  msg += `Tasa efectiva (-comisi\xF3n): *$${effectiveRate.toFixed(4)}*
+  msg += `Tasa Deel estimada: *$${estimated.deelRate.toFixed(4)}*
+`;
+  msg += `Recibir\xEDas: *$${estimated.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN*
+`;
+  msg += `(por $${config.default_salary_usd.toLocaleString()} USD, spread ${config.default_spread_percent}%, fee $${config.default_fixed_fee_mxn})
 
 `;
-  if (lastExchangeRate > 0) {
-    msg += `\xDAltimo cambio: $${lastExchangeRate.toFixed(4)}
+  if (lastEffectiveRate > 0) {
+    const lastMxn = lastEffectiveRate * config.default_salary_usd;
+    const diffMxn = estimated.netMxn - lastMxn;
+    msg += `\xDAltimo cambio: $${lastEffectiveRate.toFixed(4)}/USD (~$${lastMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)
 `;
-    msg += `Diferencia: ${diffFromLast >= 0 ? "+" : ""}${diffFromLast.toFixed(4)} (${trend.change_percent >= 0 ? "+" : ""}${trend.change_percent.toFixed(2)}%)
-`;
-    msg += `Impacto en $6,000 USD: ${diffMxn >= 0 ? "+" : ""}$${diffMxn.toFixed(0)} MXN
+    msg += `Diferencia: ${diffMxn >= 0 ? "+" : ""}$${diffMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN (${trend.change_percent >= 0 ? "+" : ""}${trend.change_percent.toFixed(2)}%)
 
 `;
   }
@@ -5520,8 +5564,6 @@ function evaluateAlerts(config) {
     return { shouldNotify: false, alerts: [], fullMessage: "" };
   }
   const currentRate = latestRate.rate;
-  const effectiveRate = currentRate - config.default_commission;
-  const lastExchangeRate = lastExchange?.effective_rate || 0;
   if (monthlyState.is_exchanged) {
     return {
       shouldNotify: false,
@@ -5529,44 +5571,53 @@ function evaluateAlerts(config) {
       fullMessage: "Ya cambiaste tu sueldo este mes. Alertas pausadas."
     };
   }
-  if (lastExchangeRate > 0) {
-    const changePercent = (effectiveRate - lastExchangeRate) / lastExchangeRate * 100;
-    if (changePercent >= config.alert_threshold_percent) {
-      const impactMxn = (effectiveRate - lastExchangeRate) * config.default_salary_usd;
+  const estimated = estimateDeelMxn(currentRate, config.default_salary_usd, config.default_spread_percent, config.default_fixed_fee_mxn);
+  const lastMxn = lastExchange ? lastExchange.amount_mxn : 0;
+  const lastEffectiveRate = lastExchange?.effective_rate || 0;
+  const mxnDiff = lastMxn > 0 ? estimated.netMxn - lastMxn : 0;
+  const mxnDiffPercent = lastMxn > 0 ? mxnDiff / lastMxn * 100 : 0;
+  if (lastMxn > 0 && mxnDiff > 0) {
+    const minGainMxn = lastMxn * (config.alert_threshold_percent / 100);
+    if (mxnDiff >= minGainMxn) {
       alerts.push({
         type: "threshold_up",
         triggered: true,
-        message: `\uD83D\uDCC8 *\xA1D\xF3lar arriba!*
-` + `Tasa efectiva: $${effectiveRate.toFixed(4)} vs \xFAltimo cambio $${lastExchangeRate.toFixed(4)}
-` + `Mejora: +${changePercent.toFixed(2)}% \u2192 +$${impactMxn.toFixed(0)} MXN en tu sueldo`,
+        message: `\uD83D\uDCC8 *\xA1Recibir\xEDas m\xE1s que el mes pasado!*
+` + `Estimado hoy: $${estimated.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN
+` + `\xDAltimo cambio: $${lastMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN
+` + `Diferencia: +$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN (+${mxnDiffPercent.toFixed(2)}%)`,
         rate: currentRate,
-        change_percent: changePercent
-      });
-    }
-    if (trend.direction === "down" && trend.consecutive_days >= config.trend_decline_days) {
-      alerts.push({
-        type: "trend_decline",
-        triggered: true,
-        message: `\uD83D\uDCC9 *Tendencia bajista sostenida*
-` + `${trend.consecutive_days} d\xEDas consecutivos a la baja
-` + `Momentum: ${trend.momentum.toFixed(2)}%
-` + `${effectiveRate > lastExchangeRate ? "A\xFAn est\xE1s por encima de tu \xFAltimo cambio, pero la tendencia no es favorable." : "\u26A0\uFE0F Ya est\xE1s por debajo de tu \xFAltimo cambio. Considera cambiar pronto."}`,
-        rate: currentRate,
-        change_percent: (effectiveRate - lastExchangeRate) / lastExchangeRate * 100
+        estimated_mxn: estimated.netMxn,
+        change_mxn: mxnDiff
       });
     }
   }
-  if (isLastWeekOfMonth() && lastExchangeRate > 0) {
-    const changePercent = (effectiveRate - lastExchangeRate) / lastExchangeRate * 100;
-    if (Math.abs(changePercent) >= config.alert_threshold_percent * 0.5 && !alerts.some((a) => a.type === "threshold_up")) {
+  if (lastMxn > 0 && trend.direction === "down" && trend.consecutive_days >= config.trend_decline_days) {
+    alerts.push({
+      type: "trend_decline",
+      triggered: true,
+      message: `\uD83D\uDCC9 *Tendencia bajista sostenida*
+` + `${trend.consecutive_days} d\xEDas consecutivos a la baja
+` + `Momentum: ${trend.momentum.toFixed(2)}%
+` + `${mxnDiff >= 0 ? "A\xFAn recibir\xEDas m\xE1s que el mes pasado, pero la tendencia no es favorable." : `\u26A0\uFE0F Recibir\xEDas $${Math.abs(mxnDiff).toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN menos que el mes pasado. Considera cambiar pronto.`}`,
+      rate: currentRate,
+      estimated_mxn: estimated.netMxn,
+      change_mxn: mxnDiff
+    });
+  }
+  if (isLastWeekOfMonth() && lastMxn > 0) {
+    const minGainMxn = lastMxn * (config.alert_threshold_percent * 0.5 / 100);
+    if (Math.abs(mxnDiff) >= minGainMxn && !alerts.some((a) => a.type === "threshold_up")) {
       alerts.push({
         type: "daily_summary",
         triggered: true,
         message: `\uD83D\uDCC5 *\xDAltima semana del mes*
-` + `Tu sueldo llega pronto. Tasa efectiva: $${effectiveRate.toFixed(4)}
-` + `vs \xFAltimo cambio: $${lastExchangeRate.toFixed(4)} (${changePercent >= 0 ? "+" : ""}${changePercent.toFixed(2)}%)`,
+` + `Tu sueldo llega pronto.
+` + `Estimado hoy: $${estimated.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN
+` + `Vs \xFAltimo cambio: ${mxnDiff >= 0 ? "+" : ""}$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN`,
         rate: currentRate,
-        change_percent: changePercent
+        estimated_mxn: estimated.netMxn,
+        change_mxn: mxnDiff
       });
     }
   }
@@ -5580,7 +5631,7 @@ function evaluateAlerts(config) {
 `);
   fullMessage += `
 
-${formatTrendMessage(trend, currentRate, lastExchangeRate, config.default_commission)}`;
+${formatTrendMessage(trend, currentRate, lastEffectiveRate, config)}`;
   return {
     shouldNotify: true,
     alerts,
@@ -5590,6 +5641,21 @@ ${formatTrendMessage(trend, currentRate, lastExchangeRate, config.default_commis
 
 // src/bot.ts
 var import_grammy = __toESM(require_mod(), 1);
+var HELP_TEXT = `*Comandos disponibles:*
+` + `/status - Tasa actual, tendencia y recomendaci\xF3n
+` + `/refresh - Consultar tasa ahora mismo
+` + `/changed <tasa\\_deel> <usd> [mxn] [YYYY-MM] - Registrar cambio
+` + `/reset - Reactivar alertas del mes actual
+` + `/seed [d\xEDas] - Cargar datos hist\xF3ricos
+` + `/history - Historial de cambios
+` + `/stats - Estad\xEDsticas acumuladas
+` + `/month - Resumen del mes actual
+` + `/config - Ver configuraci\xF3n actual
+` + `/set\\_spread <pct> - Cambiar spread de Deel
+` + `/set\\_fee <monto> - Cambiar fee fija de Deel
+` + `/set\\_salary <monto> - Cambiar sueldo en USD
+` + `/set\\_threshold <pct> - Cambiar umbral de alerta
+` + `/help - Mostrar esta ayuda`;
 function createBot(config) {
   const bot = new import_grammy.Bot(config.telegram_bot_token);
   bot.use(async (ctx, next) => {
@@ -5602,36 +5668,14 @@ function createBot(config) {
   bot.command("start", async (ctx) => {
     await ctx.reply(`\uD83E\uDD11 *Dollar Check Bot*
 
-` + `Te ayudo a encontrar el mejor momento para cambiar tu sueldo de USD a MXN.
+` + `Te ayudo a encontrar el mejor momento para cambiar tu sueldo de USD a MXN v\xEDa Deel.
 
-` + `*Comandos disponibles:*
-` + `/status - Tasa actual, tendencia y recomendaci\xF3n
-` + `/changed <tasa> - Registrar que cambiaste tu sueldo
-` + `/history - Historial de cambios
-` + `/stats - Estad\xEDsticas acumuladas
-` + `/month - Resumen del mes actual
-` + `/config - Ver configuraci\xF3n actual
-` + `/set\\_threshold <porcentaje> - Cambiar umbral de alerta
-` + `/set\\_commission <monto> - Cambiar comisi\xF3n por d\xF3lar
-` + `/set\\_salary <monto> - Cambiar monto de sueldo en USD
-` + `/refresh - Consultar tasa ahora mismo
-` + `/help - Mostrar esta ayuda`, { parse_mode: "Markdown" });
+` + HELP_TEXT, { parse_mode: "Markdown" });
   });
   bot.command("help", async (ctx) => {
-    await ctx.api.sendMessage(ctx.chat.id, `\uD83E\uDD11 *Dollar Check Bot - Ayuda*
+    await ctx.reply(`\uD83E\uDD11 *Dollar Check Bot - Ayuda*
 
-` + `*Comandos disponibles:*
-` + `/status - Tasa actual, tendencia y recomendaci\xF3n
-` + `/changed <tasa> - Registrar que cambiaste tu sueldo
-` + `/history - Historial de cambios
-` + `/stats - Estad\xEDsticas acumuladas
-` + `/month - Resumen del mes actual
-` + `/config - Ver configuraci\xF3n actual
-` + `/set\\_threshold <porcentaje> - Cambiar umbral de alerta
-` + `/set\\_commission <monto> - Cambiar comisi\xF3n por d\xF3lar
-` + `/set\\_salary <monto> - Cambiar monto de sueldo en USD
-` + `/refresh - Consultar tasa ahora mismo
-` + `/help - Mostrar esta ayuda`, { parse_mode: "Markdown" });
+` + HELP_TEXT, { parse_mode: "Markdown" });
   });
   bot.command("status", async (ctx) => {
     const latestRate = getLatestRate();
@@ -5643,7 +5687,7 @@ function createBot(config) {
       return;
     }
     const lastRate = lastExchange?.effective_rate || 0;
-    let msg = formatTrendMessage(trend, latestRate.rate, lastRate, config.default_commission);
+    let msg = formatTrendMessage(trend, latestRate.rate, lastRate, config);
     if (monthlyState.is_exchanged) {
       msg += `
 
@@ -5659,54 +5703,124 @@ function createBot(config) {
     try {
       await ctx.reply("\uD83D\uDD04 Consultando tasa actual...");
       const rate = await fetchCurrentRate(config.oxr_app_id);
-      const effectiveRate = rate - config.default_commission;
+      const estimated = estimateDeelMxn(rate, config.default_salary_usd, config.default_spread_percent, config.default_fixed_fee_mxn);
       const lastExchange = getLastSalaryExchange();
-      const lastRate = lastExchange?.effective_rate || 0;
       let diff = "";
-      if (lastRate > 0) {
-        const change = effectiveRate - lastRate;
-        const pct = (change / lastRate * 100).toFixed(2);
-        const impact = (change * config.default_salary_usd).toFixed(0);
+      if (lastExchange) {
+        const lastMxn = lastExchange.amount_mxn;
+        const mxnDiff = estimated.netMxn - lastMxn;
         diff = `
-Vs \xFAltimo cambio: ${change >= 0 ? "+" : ""}${change.toFixed(4)} (${pct}%) \u2192 ${change >= 0 ? "+" : ""}$${impact} MXN`;
+Vs \xFAltimo cambio: ${mxnDiff >= 0 ? "+" : ""}$${mxnDiff.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN`;
       }
       await ctx.reply(`\uD83D\uDCB1 *Tasa actual*
-USD/MXN: $${rate.toFixed(4)}
-Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
+` + `Mercado: $${rate.toFixed(4)}
+` + `Deel estimada: $${estimated.deelRate.toFixed(4)}
+` + `Recibir\xEDas: $${estimated.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN${diff}`, { parse_mode: "Markdown" });
     } catch (error) {
       await ctx.reply(`\u274C Error al consultar: ${error}`);
     }
   });
   bot.command("changed", async (ctx) => {
     const args = ctx.message?.text?.split(" ").slice(1) || [];
-    const rate = parseFloat(args[0]);
-    const amountUsd = parseFloat(args[1]) || config.default_salary_usd;
-    if (isNaN(rate) || rate <= 0) {
-      await ctx.reply("Uso: `/changed <tasa> [monto_usd]`\n" + "Ejemplo: `/changed 17.30` o `/changed 17.30 6000`", { parse_mode: "Markdown" });
+    if (args.length < 2) {
+      await ctx.reply("Uso: `/changed <tasa_deel> <usd> [mxn_recibido] [YYYY-MM]`\n\n" + `Ejemplos:
+` + "  `/changed 17.08 5981.52 102059.80` \u2192 con MXN real\n" + "  `/changed 17.08 5981.52` \u2192 estima MXN con fee\n" + "  `/changed 17.08 5981.52 102059.80 2026-01` \u2192 mes pasado", { parse_mode: "Markdown" });
       return;
     }
-    const effectiveRate = rate - config.default_commission;
-    const amountMxn = amountUsd * effectiveRate;
+    const deelRate = parseFloat(args[0]);
+    const amountUsd = parseFloat(args[1]);
+    if (isNaN(deelRate) || deelRate <= 0 || isNaN(amountUsd) || amountUsd <= 0) {
+      await ctx.reply("\u274C Tasa y monto deben ser n\xFAmeros positivos.");
+      return;
+    }
+    let amountMxn;
+    let monthArg = null;
+    if (args[2] && /^\d{4}-\d{2}$/.test(args[2])) {
+      monthArg = args[2];
+      amountMxn = amountUsd * deelRate - config.default_fixed_fee_mxn;
+    } else if (args[2]) {
+      amountMxn = parseFloat(args[2]);
+      if (isNaN(amountMxn) || amountMxn <= 0) {
+        amountMxn = amountUsd * deelRate - config.default_fixed_fee_mxn;
+      }
+      if (args[3] && /^\d{4}-\d{2}$/.test(args[3])) {
+        monthArg = args[3];
+      }
+    } else {
+      amountMxn = amountUsd * deelRate - config.default_fixed_fee_mxn;
+    }
+    const targetMonth = monthArg || getCurrentMonth();
+    const isCurrentMonth = targetMonth === getCurrentMonth();
+    const effectiveRate = amountMxn / amountUsd;
+    const latestRate = getLatestRate();
+    const marketRate = latestRate?.rate || deelRate;
+    const actualSpread = marketRate > 0 ? (marketRate - deelRate) / marketRate * 100 : config.default_spread_percent;
     saveSalaryExchange({
-      rate,
+      rate: marketRate,
+      deel_rate: deelRate,
       amount_usd: amountUsd,
       amount_mxn: amountMxn,
-      commission_per_dollar: config.default_commission,
+      spread_percent: actualSpread,
+      fixed_fee_mxn: config.default_fixed_fee_mxn,
       effective_rate: effectiveRate,
       exchanged_at: new Date().toISOString(),
-      month: getCurrentMonth(),
-      notes: null
+      month: targetMonth,
+      notes: undefined
     });
-    markMonthAsExchanged(effectiveRate);
-    await ctx.reply(`\u2705 *Cambio registrado*
+    if (isCurrentMonth) {
+      markMonthAsExchanged(effectiveRate, targetMonth);
+    } else {
+      markMonthAsExchanged(effectiveRate, targetMonth);
+    }
+    let statusMsg = isCurrentMonth ? `Alertas pausadas hasta el pr\xF3ximo mes. \uD83D\uDD15` : `\uD83D\uDCDD Registrado para ${targetMonth}. Alertas de este mes siguen activas. \u2705`;
+    await ctx.reply(`\u2705 *Cambio registrado (${targetMonth})*
 
-` + `Tasa: $${rate.toFixed(4)}
-` + `Comisi\xF3n: -$${config.default_commission.toFixed(2)}/USD
-` + `Tasa efectiva: $${effectiveRate.toFixed(4)}
+` + `Tasa mercado: $${marketRate.toFixed(4)}
+` + `Tasa Deel: $${deelRate.toFixed(4)} (spread: ${actualSpread.toFixed(2)}%)
+` + `Fee: $${config.default_fixed_fee_mxn} MXN
 ` + `Monto: $${amountUsd.toLocaleString()} USD
 ` + `Recibiste: $${amountMxn.toLocaleString("es-MX", { minimumFractionDigits: 2 })} MXN
+` + `Tasa efectiva real: $${effectiveRate.toFixed(4)}/USD
 
-` + `Alertas pausadas hasta el pr\xF3ximo mes. \uD83D\uDD15`, { parse_mode: "Markdown" });
+` + statusMsg, { parse_mode: "Markdown" });
+  });
+  bot.command("reset", async (ctx) => {
+    resetMonthExchange();
+    await ctx.reply(`\uD83D\uDD14 *Alertas reactivadas*
+
+` + `El mes actual (${getCurrentMonth()}) est\xE1 marcado como pendiente de cambio.
+` + `El bot volver\xE1 a enviarte alertas.`, { parse_mode: "Markdown" });
+  });
+  bot.command("seed", async (ctx) => {
+    const days = parseInt(ctx.message?.text?.split(" ")[1] || "30");
+    if (isNaN(days) || days <= 0 || days > 365) {
+      await ctx.reply("Uso: `/seed [d\xEDas]`\nEjemplo: `/seed 30` (default: 30, max: 365)", { parse_mode: "Markdown" });
+      return;
+    }
+    await ctx.reply(`\uD83C\uDF31 Descargando datos hist\xF3ricos de ${days} d\xEDas...`);
+    let loaded = 0;
+    let errors = 0;
+    for (let i = days;i >= 1; i--) {
+      const date = new Date;
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split("T")[0];
+      const timestamp = Math.floor(date.getTime() / 1000);
+      try {
+        const rate = await fetchHistoricalRate(config.oxr_app_id, dateStr);
+        saveRate(rate, timestamp, "openexchangerates-historical");
+        loaded++;
+      } catch (error) {
+        errors++;
+        console.error(`[Seed] Failed to fetch ${dateStr}:`, error);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    await ctx.reply(`\u2705 *Seed completado*
+
+` + `D\xEDas cargados: ${loaded}
+` + `Errores: ${errors}
+
+` + `Ahora /status y /month tienen contexto hist\xF3rico.`, { parse_mode: "Markdown" });
   });
   bot.command("history", async (ctx) => {
     const history = getSalaryExchangeHistory(12);
@@ -5717,12 +5831,8 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
     let msg = `\uD83D\uDCCA *Historial de cambios*
 
 `;
-    msg += `| Mes | Tasa Ef. | MXN Recibido |
-`;
-    msg += `|-----|----------|-------------|
-`;
     for (const ex of history) {
-      msg += `| ${ex.month} | $${ex.effective_rate.toFixed(2)} | $${ex.amount_mxn.toLocaleString("es-MX", { maximumFractionDigits: 0 })} |
+      msg += `*${ex.month}*: $${ex.deel_rate.toFixed(2)} \u2192 $${ex.amount_mxn.toLocaleString("es-MX", { maximumFractionDigits: 0 })} MXN ($${ex.amount_usd.toLocaleString()} USD)
 `;
     }
     await ctx.reply(msg, { parse_mode: "Markdown" });
@@ -5737,7 +5847,7 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
     await ctx.reply(`\uD83D\uDCC8 *Estad\xEDsticas acumuladas*
 
 ` + `Total de cambios: ${stats.total_exchanges}
-` + `Tasa promedio efectiva: $${stats.avg_rate.toFixed(4)}
+` + `Tasa efectiva promedio: $${stats.avg_rate.toFixed(4)}/USD
 ` + `Mejor tasa: $${stats.best_rate.toFixed(4)} (${stats.best_month})
 ` + `Peor tasa: $${stats.worst_rate.toFixed(4)} (${stats.worst_month})
 
@@ -5758,6 +5868,8 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
     const min = Math.min(...rates);
     const max = Math.max(...rates);
     const avg = rates.reduce((s, r) => s + r, 0) / rates.length;
+    const estMin = estimateDeelMxn(min, config.default_salary_usd, config.default_spread_percent, config.default_fixed_fee_mxn);
+    const estMax = estimateDeelMxn(max, config.default_salary_usd, config.default_spread_percent, config.default_fixed_fee_mxn);
     let msg = `\uD83D\uDCC5 *Resumen del mes (${monthlyState.current_month})*
 
 `;
@@ -5765,11 +5877,11 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
 `;
     msg += `Tasa promedio: $${avg.toFixed(4)}
 `;
-    msg += `M\xEDnima: $${min.toFixed(4)}
+    msg += `M\xEDnima: $${min.toFixed(4)} (~$${estMin.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)
 `;
-    msg += `M\xE1xima: $${max.toFixed(4)}
+    msg += `M\xE1xima: $${max.toFixed(4)} (~$${estMax.netMxn.toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)
 `;
-    msg += `Rango: $${(max - min).toFixed(4)}
+    msg += `Rango: $${(max - min).toFixed(4)} (~$${(estMax.netMxn - estMin.netMxn).toLocaleString("es-MX", { minimumFractionDigits: 0 })} MXN)
 
 `;
     msg += monthlyState.is_exchanged ? `\u2705 Sueldo ya cambiado este mes` : `\u23F3 Sueldo pendiente de cambiar`;
@@ -5778,10 +5890,11 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
   bot.command("config", async (ctx) => {
     await ctx.reply(`\u2699\uFE0F *Configuraci\xF3n actual*
 
+` + `Sueldo base: $${config.default_salary_usd.toLocaleString()} USD
+` + `Spread Deel: ${config.default_spread_percent}%
+` + `Fee fija Deel: $${config.default_fixed_fee_mxn} MXN
 ` + `Umbral de alerta: ${config.alert_threshold_percent}%
 ` + `D\xEDas para tendencia bajista: ${config.trend_decline_days}
-` + `Comisi\xF3n por d\xF3lar: $${config.default_commission.toFixed(2)}
-` + `Sueldo base: $${config.default_salary_usd.toLocaleString()} USD
 ` + `Intervalo de polling: ${config.poll_interval_minutes} min
 ` + `D\xEDa de pago: \xDAltimo d\xEDa del mes`, { parse_mode: "Markdown" });
   });
@@ -5795,20 +5908,30 @@ Efectiva: $${effectiveRate.toFixed(4)}${diff}`, { parse_mode: "Markdown" });
     setSetting("alert_threshold_percent", value.toString());
     await ctx.reply(`\u2705 Umbral actualizado a ${value}%`);
   });
-  bot.command("set_commission", async (ctx) => {
+  bot.command("set_spread", async (ctx) => {
     const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
-    if (isNaN(value) || value < 0) {
-      await ctx.reply("Uso: `/set_commission 0.10` (pesos por d\xF3lar)", { parse_mode: "Markdown" });
+    if (isNaN(value) || value < 0 || value > 10) {
+      await ctx.reply("Uso: `/set_spread 0.75` (porcentaje que cobra Deel)", { parse_mode: "Markdown" });
       return;
     }
-    config.default_commission = value;
-    setSetting("default_commission", value.toString());
-    await ctx.reply(`\u2705 Comisi\xF3n actualizada a $${value.toFixed(2)}/USD`);
+    config.default_spread_percent = value;
+    setSetting("default_spread_percent", value.toString());
+    await ctx.reply(`\u2705 Spread de Deel actualizado a ${value}%`);
+  });
+  bot.command("set_fee", async (ctx) => {
+    const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
+    if (isNaN(value) || value < 0) {
+      await ctx.reply("Uso: `/set_fee 106.50` (fee fija en MXN)", { parse_mode: "Markdown" });
+      return;
+    }
+    config.default_fixed_fee_mxn = value;
+    setSetting("default_fixed_fee_mxn", value.toString());
+    await ctx.reply(`\u2705 Fee fija actualizada a $${value.toFixed(2)} MXN`);
   });
   bot.command("set_salary", async (ctx) => {
     const value = parseFloat(ctx.message?.text?.split(" ")[1] || "");
     if (isNaN(value) || value <= 0) {
-      await ctx.reply("Uso: `/set_salary 6000` (d\xF3lares)", { parse_mode: "Markdown" });
+      await ctx.reply("Uso: `/set_salary 5981.52` (d\xF3lares netos)", { parse_mode: "Markdown" });
       return;
     }
     config.default_salary_usd = value;
@@ -5836,9 +5959,12 @@ console.log("\u2705 Database initialized");
 var savedThreshold = getSetting("alert_threshold_percent");
 if (savedThreshold)
   config.alert_threshold_percent = parseFloat(savedThreshold);
-var savedCommission = getSetting("default_commission");
-if (savedCommission)
-  config.default_commission = parseFloat(savedCommission);
+var savedSpread = getSetting("default_spread_percent");
+if (savedSpread)
+  config.default_spread_percent = parseFloat(savedSpread);
+var savedFee = getSetting("default_fixed_fee_mxn");
+if (savedFee)
+  config.default_fixed_fee_mxn = parseFloat(savedFee);
 var savedSalary = getSetting("default_salary_usd");
 if (savedSalary)
   config.default_salary_usd = parseFloat(savedSalary);
@@ -5868,7 +5994,7 @@ bot.start({
     console.log(`\uD83D\uDCE1 Polling OXR every ${config.poll_interval_minutes}min`);
     console.log(`\u26A1 Alert threshold: ${config.alert_threshold_percent}%`);
     console.log(`\uD83D\uDCB0 Salary: $${config.default_salary_usd} USD`);
-    console.log(`\uD83D\uDCB8 Commission: $${config.default_commission}/USD`);
+    console.log(`\uD83D\uDCB8 Deel spread: ${config.default_spread_percent}% | Fee: $${config.default_fixed_fee_mxn} MXN`);
   }
 });
 process.on("SIGINT", () => {

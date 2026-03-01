@@ -26,8 +26,9 @@ export function loadConfig(): BotConfig {
     trend_decline_days: parseInt(optionalEnv("TREND_DECLINE_DAYS", "3")),
     salary_day: parseInt(optionalEnv("SALARY_DAY", "0")), // 0 = last day
     timezone: optionalEnv("TZ", "America/Mexico_City"),
-    default_salary_usd: parseFloat(optionalEnv("DEFAULT_SALARY_USD", "6000")),
-    default_commission: parseFloat(optionalEnv("DEFAULT_COMMISSION", "0.10")),
+    default_salary_usd: parseFloat(optionalEnv("DEFAULT_SALARY_USD", "6097.24")),
+    default_spread_percent: parseFloat(optionalEnv("DEFAULT_SPREAD_PERCENT", "0.75")),
+    default_fee_usd: parseFloat(optionalEnv("DEFAULT_FEE_USD", "106.65")),
   };
 }
 

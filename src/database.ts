@@ -43,9 +43,12 @@ export function initDatabase(dbPath: string = "data/dollar-check.db"): Database 
     CREATE TABLE IF NOT EXISTS salary_exchanges (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       rate REAL NOT NULL,
+      deel_rate REAL NOT NULL DEFAULT 0,
+      gross_usd REAL NOT NULL DEFAULT 0,
+      fee_usd REAL NOT NULL DEFAULT 0,
       amount_usd REAL NOT NULL,
       amount_mxn REAL NOT NULL,
-      commission_per_dollar REAL NOT NULL DEFAULT 0.10,
+      spread_percent REAL NOT NULL DEFAULT 0.75,
       effective_rate REAL NOT NULL,
       exchanged_at TEXT NOT NULL DEFAULT (datetime('now')),
       month TEXT NOT NULL,
@@ -69,6 +72,20 @@ export function initDatabase(dbPath: string = "data/dollar-check.db"): Database 
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  // Migrate old schema: add new columns if missing
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN deel_rate REAL NOT NULL DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN spread_percent REAL NOT NULL DEFAULT 0.75`);
+  } catch (_) { /* column already exists */ }
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN gross_usd REAL NOT NULL DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
+  try {
+    db.run(`ALTER TABLE salary_exchanges ADD COLUMN fee_usd REAL NOT NULL DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
 
   // Create indexes for common queries
   db.run(`
@@ -147,14 +164,17 @@ export function saveSalaryExchange(exchange: Omit<SalaryExchange, "id">): void {
   getDb()
     .prepare(`
       INSERT INTO salary_exchanges
-        (rate, amount_usd, amount_mxn, commission_per_dollar, effective_rate, exchanged_at, month, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (rate, deel_rate, gross_usd, fee_usd, amount_usd, amount_mxn, spread_percent, effective_rate, exchanged_at, month, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       exchange.rate,
+      exchange.deel_rate,
+      exchange.gross_usd,
+      exchange.fee_usd,
       exchange.amount_usd,
       exchange.amount_mxn,
-      exchange.commission_per_dollar,
+      exchange.spread_percent,
       exchange.effective_rate,
       exchange.exchanged_at,
       exchange.month,
@@ -219,7 +239,6 @@ export function getMonthlyState(): MonthlyState {
     .get(month) as any;
 
   if (!state) {
-    // Get last exchange rate from salary_exchanges
     const lastExchange = getLastSalaryExchange();
     const lastRate = lastExchange?.effective_rate || 0;
     const lastDate = lastExchange?.exchanged_at || "";
@@ -250,7 +269,6 @@ export function getMonthlyState(): MonthlyState {
 export function markMonthAsExchanged(rate: number, month?: string): void {
   const targetMonth = month || getCurrentMonth();
 
-  // Ensure the monthly_state row exists
   getDb()
     .prepare(`
       INSERT OR IGNORE INTO monthly_state (current_month, is_exchanged, last_exchange_rate, last_exchange_date)
