@@ -13,8 +13,8 @@ console.log("🤑 Dollar Check Bot starting...");
 // Load config from environment
 const config = loadConfig();
 
-// Initialize database
-const db = initDatabase();
+// Initialize database (DB_PATH lets the container point it at a mounted volume)
+const db = initDatabase(process.env.DB_PATH || undefined);
 console.log("✅ Database initialized");
 
 // Restore persisted settings

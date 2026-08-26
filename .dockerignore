@@ -1,5 +1,30 @@
+# Se reinstala/regenera dentro de la imagen
 node_modules
+dist
+
+# Estado y secretos: van por volumen y env_file, nunca en la imagen
 data
+backups
+logs
 .env
+.env.example
+*.db
+*.db-wal
+*.db-shm
+
+# Metadata local
 .git
+.gitignore
+.idea
+.claude
+.DS_Store
+
+# Infra y docs: no hacen falta en runtime
+Dockerfile
+docker-compose.yml
+.dockerignore
+scripts
 *.md
+
+# Deploy anterior en macOS/launchd
+com.dollarcheck.bot.plist

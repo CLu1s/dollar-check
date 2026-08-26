@@ -8,7 +8,7 @@ Bot de Telegram que monitorea el tipo de cambio USD/MXN y envía alertas intelig
 - **Bot Framework:** grammy
 - **API:** Open Exchange Rates (plan gratuito, polling cada hora)
 - **Base de datos:** SQLite (persistida en `./data/`)
-- **Deploy:** Docker + docker-compose en VPS
+- **Deploy:** Docker Compose (imagen `dollar-check:latest`)
 
 ## Arquitectura
 
@@ -21,6 +21,7 @@ src/
 ├── exchange.ts   # Cliente de Open Exchange Rates API
 ├── stats.ts      # Motor estadístico (SMA, EMA, volatilidad, momentum)
 ├── alerts.ts     # Motor de alertas y evaluación de condiciones
+├── analyze.ts    # Análisis AI vía Claude CLI (Bun.spawn)
 └── bot.ts        # Bot de Telegram, comandos y middleware
 ```
 
@@ -72,6 +73,7 @@ Deel cobra al cambiar USD→MXN:
 | `/history` | Historial de cambios (últimos 12) |
 | `/stats` | Estadísticas acumuladas |
 | `/month` | Resumen del mes actual |
+| `/analyze` | Análisis AI del tipo de cambio (Claude CLI) |
 | `/config` | Ver configuración actual |
 | `/set_threshold <pct>` | Cambiar umbral de alerta |
 | `/set_spread <pct>` | Cambiar spread de Deel |
@@ -86,20 +88,40 @@ Deel cobra al cambiar USD→MXN:
 4. Registrar app en https://openexchangerates.org/signup/free
 5. Llenar las variables en `.env`
 
-### Desarrollo local
+### Docker (deploy actual)
+
+El deploy es por git: se empuja a GitHub y el VPS jala y reconstruye.
+**El runbook completo está en [DEPLOY.md](DEPLOY.md)** — instalación desde cero,
+respaldos, decisiones de diseño y troubleshooting.
+
 ```bash
-bun install
+bash scripts/deploy.sh          # desde el Mac: push + pull remoto + rebuild
+bash scripts/install.sh         # en el VPS: primera instalación
+docker compose logs -f bot      # logs
+docker compose ps               # estado + healthy/unhealthy
+bash scripts/backup.sh          # respaldar el volumen SQLite
+```
+
+Puntos que hay que tener presentes al tocar el código:
+
+- El SQLite vive en el named volume `dollar-check-data`, no en `./data/`.
+  La ruta la fija `DB_PATH` desde el compose.
+- `.env` no está en git; se crea una vez por host.
+- Solo puede haber **una** instancia viva: dos long-pollers con el mismo token
+  dan 409 en Telegram.
+- **`/analyze` no funciona dentro del contenedor**: la imagen no trae el CLI de
+  `claude` que invoca `src/analyze.ts` vía `Bun.spawn`.
+
+### Legado: macOS launchd
+
+`scripts/{setup,start,stop,restart,status,logs}.sh` y
+`com.dollarcheck.bot.plist` son del deploy anterior con launchd en el Mac
+Studio. Se conservan como referencia; no correrlos en paralelo con el
+contenedor.
+
+### Desarrollo
+```bash
 bun run dev
-```
-
-### Deploy con Docker
-```bash
-docker compose up -d --build
-```
-
-### Ver logs
-```bash
-docker compose logs -f
 ```
 
 ## Variables de Entorno
@@ -117,11 +139,13 @@ docker compose logs -f
 | `DEFAULT_SPREAD_PERCENT` | No | 0.75 | Spread de Deel en % |
 | `DEFAULT_FEE_USD` | No | 106.65 | Tarifa de cambio de Deel en USD |
 | `TZ` | No | America/Mexico_City | Zona horaria |
+| `DB_PATH` | No | data/dollar-check.db | Ruta del SQLite (Docker: `/app/data/dollar-check.db`) |
 
 ## Datos Importantes
 
 - Cada centavo en el tipo de cambio equivale a ~$60 MXN con un sueldo de ~$6,000 USD
 - Deel cobra ~$106.65 USD de tarifa + ~0.75% de spread sobre la tasa de mercado
 - El plan gratuito de OXR actualiza cada hora, suficiente para decisiones a nivel de días
-- La base de datos SQLite se guarda en `./data/` y persiste entre reinicios del contenedor
+- La base de datos SQLite se guarda en `./data/` y persiste entre reinicios
+- El bot corre en Docker con `restart: unless-stopped` (se reinicia automáticamente)
 - Usar `/seed 30` al iniciar por primera vez para tener contexto histórico
