@@ -133,26 +133,27 @@ export function getRatesSince(hours: number): ExchangeRate[] {
 }
 
 export function getDailyRates(days: number): DailyRate[] {
+  const since = Math.floor(Date.now() / 1000) - days * 86400;
   return getDb()
     .prepare(`
       SELECT
-        date(created_at) as date,
+        date(timestamp, 'unixepoch') as date,
         AVG(rate) as avg_rate,
         MIN(rate) as min_rate,
         MAX(rate) as max_rate
       FROM exchange_rates
-      WHERE created_at >= datetime('now', '-' || ? || ' days')
-      GROUP BY date(created_at)
+      WHERE timestamp >= ?
+      GROUP BY date(timestamp, 'unixepoch')
       ORDER BY date DESC
     `)
-    .all(days) as DailyRate[];
+    .all(since) as DailyRate[];
 }
 
 export function getRatesForMonth(month: string): ExchangeRate[] {
   return getDb()
     .prepare(`
       SELECT * FROM exchange_rates
-      WHERE created_at LIKE ? || '%'
+      WHERE strftime('%Y-%m', timestamp, 'unixepoch') = ?
       ORDER BY timestamp ASC
     `)
     .all(month) as ExchangeRate[];

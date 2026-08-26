@@ -75,6 +75,27 @@ describe("Exchange Rates", () => {
     expect(daily[0].min_rate).toBe(17.10);
     expect(daily[0].max_rate).toBe(17.30);
   });
+
+  test("should group seeded historical rates by their real date, not insertion date", () => {
+    // This simulates /seed: rates are inserted NOW but represent past dates
+    const now = Math.floor(Date.now() / 1000);
+    const oneDay = 86400;
+
+    // Insert 3 rates for 3 different past days (all inserted "now")
+    saveRate(17.10, now - oneDay * 3); // 3 days ago
+    saveRate(17.20, now - oneDay * 2); // 2 days ago
+    saveRate(17.30, now - oneDay * 1); // yesterday
+
+    const daily = getDailyRates(7);
+
+    // Should have 3 separate days, NOT 1 day
+    expect(daily.length).toBe(3);
+
+    // Most recent first (ORDER BY date DESC)
+    expect(daily[0].avg_rate).toBe(17.30);
+    expect(daily[1].avg_rate).toBe(17.20);
+    expect(daily[2].avg_rate).toBe(17.10);
+  });
 });
 
 // ---- Salary Exchanges (Deel USD fee model) ----

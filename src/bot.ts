@@ -20,6 +20,7 @@ import {
 } from "./database";
 import { fetchCurrentRate, fetchHistoricalRate } from "./exchange";
 import { analyzeTrend, formatTrendMessage } from "./stats";
+import { runAnalysis } from "./analyze";
 import { getCurrentMonth } from "./config";
 
 const HELP_TEXT =
@@ -32,6 +33,7 @@ const HELP_TEXT =
   `/history - Historial de cambios\n` +
   `/stats - Estadísticas acumuladas\n` +
   `/month - Resumen del mes actual\n` +
+  `/analyze - Análisis AI del tipo de cambio\n` +
   `/config - Ver configuración actual\n` +
   `/set\\_spread <pct> - Cambiar spread de Deel\n` +
   `/set\\_fee <monto> - Cambiar tarifa Deel en USD\n` +
@@ -322,6 +324,26 @@ export function createBot(config: BotConfig): Bot {
       : `⏳ Sueldo pendiente de cambiar`;
 
     await ctx.reply(msg, { parse_mode: "Markdown" });
+  });
+
+  // ---- /config ----
+  // ---- /analyze ----
+  bot.command("analyze", async (ctx) => {
+    await ctx.reply("🤖 Analizando con Claude, dame un momento...");
+
+    try {
+      const analysis = await runAnalysis(config);
+
+      // Telegram has 4096 char limit per message
+      if (analysis.length > 4000) {
+        await ctx.reply(analysis.slice(0, 4000) + "\n\n⚠️ (respuesta truncada)");
+      } else {
+        await ctx.reply(analysis);
+      }
+    } catch (error) {
+      console.error("[Analyze] Error:", error);
+      await ctx.reply(`❌ Error al analizar: ${error}`);
+    }
   });
 
   // ---- /config ----
