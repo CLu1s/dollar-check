@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 VPS_USER="${VPS_USER:-luis}"
 VPS_HOST="${VPS_HOST:-46.225.30.60}"
-VPS_DIR="${VPS_DIR:-~/dollar-check}"
+VPS_DIR="${VPS_DIR:-~/projects/dollar-check}"
 BRANCH="${BRANCH:-main}"
 
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }

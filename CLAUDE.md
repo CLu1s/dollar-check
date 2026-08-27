@@ -73,7 +73,7 @@ Deel cobra al cambiar USD→MXN:
 | `/history` | Historial de cambios (últimos 12) |
 | `/stats` | Estadísticas acumuladas |
 | `/month` | Resumen del mes actual |
-| `/analyze` | Análisis AI del tipo de cambio (Claude CLI) |
+| `/analyze` | Análisis AI del tipo de cambio (roto en Docker → usar la skill del Mac) |
 | `/config` | Ver configuración actual |
 | `/set_threshold <pct>` | Cambiar umbral de alerta |
 | `/set_spread <pct>` | Cambiar spread de Deel |
@@ -110,7 +110,8 @@ Puntos que hay que tener presentes al tocar el código:
 - Solo puede haber **una** instancia viva: dos long-pollers con el mismo token
   dan 409 en Telegram.
 - **`/analyze` no funciona dentro del contenedor**: la imagen no trae el CLI de
-  `claude` que invoca `src/analyze.ts` vía `Bun.spawn`.
+  `claude` que invoca `src/analyze.ts` vía `Bun.spawn`. El reemplazo es la skill
+  `/analyze` de Claude Code (ver abajo).
 
 ### Legado: macOS launchd
 
@@ -118,6 +119,23 @@ Puntos que hay que tener presentes al tocar el código:
 `com.dollarcheck.bot.plist` son del deploy anterior con launchd en el Mac
 Studio. Se conservan como referencia; no correrlos en paralelo con el
 contenedor.
+
+### Skill `/analyze` (reemplazo del comando del bot)
+
+Vive en `.claude/skills/analyze/SKILL.md` y está versionada con el repo. Desde
+Claude Code en el Mac, `/analyze` trae el snapshot de datos del VPS y hace el
+análisis del lado del cliente:
+
+```bash
+ssh luis@46.225.30.60 'docker exec dollar-check bun run src/context.ts'
+```
+
+`src/context.ts` imprime el mismo contexto que `buildContext()` le pasaba a la
+AI dentro del bot (solo lectura del SQLite; no consulta OXR). El prompt del
+analista es el mismo `ANALYSIS_SYSTEM_PROMPT` de `src/analyze.ts`, así que la
+respuesta es equivalente a la del viejo `/analyze` de Telegram.
+
+Si `src/context.ts` cambia, hay que redesplegar para que exista en el contenedor.
 
 ### Desarrollo
 ```bash

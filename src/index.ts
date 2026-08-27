@@ -2,7 +2,7 @@
 // Dollar Check Bot - Entry Point
 // ============================================
 
-import { initDatabase, getSetting } from "./database";
+import { initDatabase, applyPersistedSettings } from "./database";
 import { loadConfig } from "./config";
 import { fetchCurrentRate } from "./exchange";
 import { evaluateAlerts } from "./alerts";
@@ -17,18 +17,8 @@ const config = loadConfig();
 const db = initDatabase(process.env.DB_PATH || undefined);
 console.log("✅ Database initialized");
 
-// Restore persisted settings
-const savedThreshold = getSetting("alert_threshold_percent");
-if (savedThreshold) config.alert_threshold_percent = parseFloat(savedThreshold);
-
-const savedSpread = getSetting("default_spread_percent");
-if (savedSpread) config.default_spread_percent = parseFloat(savedSpread);
-
-const savedFee = getSetting("default_fee_usd");
-if (savedFee) config.default_fee_usd = parseFloat(savedFee);
-
-const savedSalary = getSetting("default_salary_usd");
-if (savedSalary) config.default_salary_usd = parseFloat(savedSalary);
+// Restore persisted settings (/set_threshold, /set_spread, /set_fee, /set_salary)
+applyPersistedSettings(config);
 
 // Create and start bot
 const bot = createBot(config);

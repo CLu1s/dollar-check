@@ -4,6 +4,7 @@
 
 import { Database } from "bun:sqlite";
 import type {
+  BotConfig,
   ExchangeRate,
   SalaryExchange,
   MonthlyState,
@@ -314,4 +315,24 @@ export function setSetting(key: string, value: string): void {
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
     `)
     .run(key, value, value);
+}
+
+/**
+ * Sobrescribe la config cargada del entorno con lo que el usuario haya
+ * cambiado en caliente con /set_threshold, /set_spread, /set_fee y /set_salary.
+ * Mutación in-place: la comparten el bot y src/context.ts.
+ */
+export function applyPersistedSettings(config: BotConfig): BotConfig {
+  const saved = {
+    alert_threshold_percent: getSetting("alert_threshold_percent"),
+    default_spread_percent: getSetting("default_spread_percent"),
+    default_fee_usd: getSetting("default_fee_usd"),
+    default_salary_usd: getSetting("default_salary_usd"),
+  };
+
+  for (const [key, value] of Object.entries(saved)) {
+    if (value !== null) (config as any)[key] = parseFloat(value);
+  }
+
+  return config;
 }

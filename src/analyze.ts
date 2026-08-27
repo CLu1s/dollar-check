@@ -8,9 +8,10 @@ import type { BotConfig } from "./types";
 import { estimateDeelMxn } from "./types";
 
 /**
- * Build a data snapshot for Claude to analyze
+ * Build a data snapshot for Claude to analyze.
+ * Lo usan /analyze (dentro del bot) y src/context.ts (para la skill del Mac).
  */
-function buildContext(config: BotConfig): string {
+export function buildContext(config: BotConfig): string {
   const dailyRates = getDailyRates(30);
   const latestRate = getLatestRate();
   const lastExchange = getLastSalaryExchange();
@@ -82,25 +83,30 @@ function buildContext(config: BotConfig): string {
 }
 
 /**
+ * Prompt de sistema del analista. Lo comparten el /analyze del bot y la skill
+ * `/analyze` del Mac, para que ambos den el mismo tipo de respuesta.
+ */
+export const ANALYSIS_SYSTEM_PROMPT = [
+  "Eres un analista financiero especializado en el par USD/MXN.",
+  "El usuario cobra su sueldo en USD y lo cambia a MXN una vez al mes vía Deel.",
+  "Tu trabajo: analizar los datos proporcionados y dar una recomendación clara sobre si debería cambiar ahora, esperar, o estar atento.",
+  "",
+  "Reglas:",
+  "- Responde en español, máximo 300 palabras",
+  "- Sé directo y concreto: ¿cambiar hoy o esperar?",
+  "- Cuantifica en MXN cuando sea posible (\"ganarías ~$X MXN más si...\")",
+  "- Menciona los factores clave que observas en los datos",
+  "- Si no hay suficiente información para una recomendación fuerte, dilo",
+  "- NO uses markdown, solo texto plano con emojis para estructura",
+  "- NO inventes datos que no estén en el contexto",
+].join("\n");
+
+/**
  * Run Claude CLI with the data and return its analysis
  */
 export async function runAnalysis(config: BotConfig): Promise<string> {
   const context = buildContext(config);
-
-  const systemPrompt = [
-    "Eres un analista financiero especializado en el par USD/MXN.",
-    "El usuario cobra su sueldo en USD y lo cambia a MXN una vez al mes vía Deel.",
-    "Tu trabajo: analizar los datos proporcionados y dar una recomendación clara sobre si debería cambiar ahora, esperar, o estar atento.",
-    "",
-    "Reglas:",
-    "- Responde en español, máximo 300 palabras",
-    "- Sé directo y concreto: ¿cambiar hoy o esperar?",
-    "- Cuantifica en MXN cuando sea posible (\"ganarías ~$X MXN más si...\")",
-    "- Menciona los factores clave que observas en los datos",
-    "- Si no hay suficiente información para una recomendación fuerte, dilo",
-    "- NO uses markdown, solo texto plano con emojis para estructura",
-    "- NO inventes datos que no estén en el contexto",
-  ].join("\n");
+  const systemPrompt = ANALYSIS_SYSTEM_PROMPT;
 
   const userPrompt = `Analiza estos datos del tipo de cambio USD/MXN y dame tu recomendación:\n\n${context}`;
 

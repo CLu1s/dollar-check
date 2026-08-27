@@ -47,7 +47,7 @@ Si prefieres a mano:
 
 ```bash
 git push origin main
-ssh luis@46.225.30.60 'cd ~/dollar-check && git pull && docker compose up -d --build'
+ssh luis@46.225.30.60 'cd ~/projects/dollar-check && git pull && docker compose up -d --build'
 ```
 
 ---
@@ -73,8 +73,8 @@ cat ~/.ssh/id_ed25519.pub    # pégala en GitHub > Settings > Deploy keys (read-
 ### 3. Clonar
 
 ```bash
-git clone git@github.com:CLu1s/dollar-check.git ~/dollar-check
-cd ~/dollar-check
+git clone git@github.com:CLu1s/dollar-check.git ~/projects/dollar-check
+cd ~/projects/dollar-check
 ```
 
 ### 4. Configurar `.env`
@@ -161,14 +161,14 @@ corrompe el SQLite) y hace `chown` a 1000:1000.
 Traer un respaldo del VPS al Mac:
 
 ```bash
-ssh luis@46.225.30.60 'cd ~/dollar-check && bash scripts/backup.sh'
-scp luis@46.225.30.60:'~/dollar-check/backups/*.tar.gz' ./backups/
+ssh luis@46.225.30.60 'cd ~/projects/dollar-check && bash scripts/backup.sh'
+scp luis@46.225.30.60:'~/projects/dollar-check/backups/*.tar.gz' ./backups/
 ```
 
 Cron diario en el VPS:
 
 ```cron
-0 4 * * * cd /home/luis/dollar-check && bash scripts/backup.sh >> /var/log/dollar-check-backup.log 2>&1
+0 4 * * * cd /home/luis/projects/dollar-check && bash scripts/backup.sh >> /var/log/dollar-check-backup.log 2>&1
 ```
 
 ---
