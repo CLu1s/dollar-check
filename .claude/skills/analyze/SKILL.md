@@ -30,6 +30,7 @@ Es de solo lectura: abre el SQLite del volumen, no toca OXR ni gasta cuota de la
 | `Module not found "src/context.ts"` | el VPS tiene un commit viejo | avisar a Luis que corra `bash scripts/deploy.sh` desde el Mac |
 | timeout / `Connection refused` | VPS o red | reportarlo, no reintentar en bucle |
 | contexto sin `TASAS DIARIAS` | base vacía | pedirle a Luis que mande `/seed 30` al bot en Telegram |
+| contexto sin `ÚLTIMO CAMBIO REGISTRADO` | el VPS no tiene historial de `/changed` | analiza igual, pero di explícitamente que no hay referencia real contra la cual comparar los MXN |
 
 No inventes el snapshot ni lo sustituyas por la base local de `./data/` sin
 decirlo: esa copia es vieja y llevaría a una recomendación equivocada.
