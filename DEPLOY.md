@@ -7,12 +7,12 @@ clona este repo de GitHub, construye el `Dockerfile` con Podman y lo corre segú
 ```
 dollar-check/                  raíz del repo = contexto de build
 ├── cloudinabottle.toml        manifest de CIAB (puerto, SQLite, recursos, grants)
-├── Dockerfile
+├── Dockerfile                 2 etapas: build (bun run build → dist/) y runtime
 ├── .dockerignore
 ├── .env                       solo dev local — NO versionado
 ├── DEPLOY.md                  este archivo
 ├── CLAUDE.md                  documentación del bot en sí
-└── src/
+└── src/                       bot + server + dashboard (src/web/)
 ```
 
 ---
@@ -79,17 +79,21 @@ Eso hace `git pull`, reconstruye la imagen y reinicia el contenedor. Si el
 manifest agregó una key a `grants`, hay que aprobarla (el `reload --update` del
 CLI la aprueba solo).
 
+Antes de empujar, `bun run test` y `bun run build` en el Mac: si el build falla
+ahí, también fallará en CIAB (y la versión anterior seguirá corriendo).
+
 ---
 
 ## Operación
 
 | Qué | Cómo |
 |---|---|
+| Dashboard | `https://dollar-check.<zona>/` (con sesión de owner) |
 | Logs | página de la app en CIAB, o `bottle app logs dollar-check --follow` |
 | Salud | `https://dollar-check.<zona>/health` (200 = llegan tasas; 503 = no) |
 | Parar | `bottle app stop dollar-check` (los datos se quedan) |
 | Arrancar | `bottle app reload dollar-check` |
-| Shell en el contenedor | `bottle app ssh dollar-check` |
+| Shell en el contenedor | `bottle app ssh dollar-check` (el cwd es `/app/dist`; el CLI es `bun run /app/src/context.ts`) |
 | Snapshot para `/analyze` | `bottle curl https://dollar-check.<zona>/api/context` |
 
 Todas las rutas HTTP están detrás del login de owner de CIAB.
@@ -118,7 +122,20 @@ inconsistente es mínimo.
 contenedor accesible por HTTP: tras arrancar sondea `GET /` durante 60 s y, si
 no contesta, la marca en error y no la vuelve a levantar tras un reboot. Por eso
 `src/index.ts` arranca `startServer()` antes de pedir secrets o crear el bot. Ese
-mismo servidor servirá el dashboard (Fase 2).
+mismo servidor sirve el dashboard.
+
+**El dashboard se empaqueta al construir, no al arrancar.** La etapa `build` del
+`Dockerfile` corre `bun run build` (`bun build --target=bun --production`): server,
+grammy, React y Recharts quedan en `dist/`, y el runtime no lleva `node_modules`.
+Si el front no compila, falla el build y CIAB sigue con la versión anterior; con
+empaquetado en caliente, el fallo sería un 500 en `GET /` durante el sondeo de
+arranque. `--sourcemap=linked` hace que las trazas de los logs apunten a
+`src/…:línea` en vez de al código minificado.
+
+**Se arranca desde `dist/`.** Bun resuelve los archivos del dashboard (el
+manifiesto del bundle) relativos al directorio de trabajo; por eso el
+`Dockerfile` termina con `WORKDIR /app/dist`. `--no-install` evita que Bun, al no
+ver `node_modules`, intente instalar paquetes al vuelo.
 
 **Un solo proceso.** Bot, polling y HTTP en el mismo proceso: es el modelo de CIAB
 (no hay tipo "worker") y deja un solo escritor del SQLite y una sola `config` en
@@ -162,4 +179,7 @@ Claude Code, que lee `GET /api/context`.
 | `unable to open database file` al arrancar | Alguien agregó `USER` al `Dockerfile`. Tiene que correr como root (ver arriba). |
 | `/health` en 503 con la app viva | >3 intervalos sin tasas: `OXR_APP_ID` inválido o cuota agotada. |
 | `/status` sin medias móviles | Base sin histórico: falta `/seed 30`. |
-| Falla el build | Límite de 512 MB y 5 min por build (`build_memory_mb` en el manifest). |
+| Falla el build | Límite de 512 MB y 5 min por build (`build_memory_mb` en el manifest; `bun run build` pide ~90 MB). Si es `bun run build`, repítelo en el Mac: casi siempre es un import o TSX roto en `src/web/`. |
+| `Bundled file "./index-….js" not found` al arrancar | El proceso no arrancó desde `dist/`: alguien cambió el `WORKDIR` o el `CMD` del `Dockerfile`. |
+| El dashboard dice "Tu sesión de CIAB venció" | `/api/dashboard` devolvió el login en vez de JSON. Recarga y vuelve a entrar. |
+| El dashboard dice "No están llegando tasas nuevas" | Lo mismo que `/health` en 503: revisa los logs (OXR, cuota). |

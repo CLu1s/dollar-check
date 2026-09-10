@@ -4,7 +4,7 @@
 
 import { Database } from "bun:sqlite";
 import type {
-  BotConfig,
+  BotSettings,
   ExchangeRate,
   SalaryExchange,
   MonthlyState,
@@ -150,6 +150,24 @@ export function getDailyRates(days: number): DailyRate[] {
     .all(since) as DailyRate[];
 }
 
+/**
+ * Una tasa por timestamp de OXR desde `sinceTs` (epoch en segundos). Los
+ * reinicios y /refresh pueden guardar la misma lectura dos veces; se deduplica
+ * al leer porque un índice UNIQUE haría fallar initDatabase con los duplicados
+ * que ya existen.
+ */
+export function getUniqueRates(sinceTs: number = 0): { timestamp: number; rate: number }[] {
+  return getDb()
+    .prepare(`
+      SELECT timestamp, AVG(rate) AS rate
+      FROM exchange_rates
+      WHERE timestamp >= ?
+      GROUP BY timestamp
+      ORDER BY timestamp ASC
+    `)
+    .all(sinceTs) as { timestamp: number; rate: number }[];
+}
+
 export function getRatesForMonth(month: string): ExchangeRate[] {
   return getDb()
     .prepare(`
@@ -198,6 +216,17 @@ export function getSalaryExchangeHistory(limit: number = 12): SalaryExchange[] {
   return getDb()
     .prepare("SELECT * FROM salary_exchanges ORDER BY month DESC, id DESC LIMIT ?")
     .all(limit) as SalaryExchange[];
+}
+
+/** Una fila por mes (la de id más alto: un /changed corregido gana), del mes más reciente al más viejo. */
+export function getExchangesByMonth(): SalaryExchange[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM salary_exchanges
+      WHERE id IN (SELECT MAX(id) FROM salary_exchanges GROUP BY month)
+      ORDER BY month DESC
+    `)
+    .all() as SalaryExchange[];
 }
 
 export function getExchangeStats(): ExchangeStats | null {
@@ -272,6 +301,14 @@ export function getMonthlyState(): MonthlyState {
   };
 }
 
+/** Lo mismo que getMonthlyState().is_exchanged, sin crear la fila: para un GET. */
+export function isMonthExchanged(month: string): boolean {
+  const row = getDb()
+    .prepare("SELECT is_exchanged FROM monthly_state WHERE current_month = ?")
+    .get(month) as { is_exchanged: number } | null;
+  return !!row?.is_exchanged;
+}
+
 export function markMonthAsExchanged(rate: number, month?: string): void {
   const targetMonth = month || getCurrentMonth();
 
@@ -326,7 +363,7 @@ export function setSetting(key: string, value: string): void {
  * cambiado en caliente con /set_threshold, /set_spread, /set_fee y /set_salary.
  * Mutación in-place: la comparten el bot y src/context.ts.
  */
-export function applyPersistedSettings(config: BotConfig): BotConfig {
+export function applyPersistedSettings<T extends BotSettings>(config: T): T {
   const saved = {
     alert_threshold_percent: getSetting("alert_threshold_percent"),
     default_spread_percent: getSetting("default_spread_percent"),

@@ -3,7 +3,7 @@
 // ============================================
 
 import { getDailyRates, getLatestRate, getLastSalaryExchange } from "./database";
-import type { TrendAnalysis, AlertRecommendation, DailyRate, BotConfig } from "./types";
+import type { TrendAnalysis, AlertRecommendation, DailyRate, BotSettings } from "./types";
 import { estimateDeelMxn } from "./types";
 
 /**
@@ -195,6 +195,23 @@ export function analyzeTrend(thresholdPercent: number): TrendAnalysis {
   };
 }
 
+// Los comparten /status, las alertas y el dashboard, para que digan lo mismo.
+export const RECOMMENDATION_EMOJI: Record<AlertRecommendation, string> = {
+  strong_buy: "🟢🟢",
+  buy: "🟢",
+  hold: "🟡",
+  watch: "🟠",
+  change_now: "🔴",
+};
+
+export const RECOMMENDATION_LABEL: Record<AlertRecommendation, string> = {
+  strong_buy: "¡EXCELENTE momento para cambiar!",
+  buy: "Buen momento para cambiar",
+  hold: "Mantener, sin urgencia",
+  watch: "Vigilar de cerca, tendencia bajista",
+  change_now: "⚠️ Cambiar YA, caída sostenida",
+};
+
 /**
  * Format trend analysis as readable message
  */
@@ -202,7 +219,7 @@ export function formatTrendMessage(
   trend: TrendAnalysis,
   currentRate: number,
   lastEffectiveRate: number,
-  config: BotConfig
+  config: BotSettings
 ): string {
   const estimated = estimateDeelMxn(
     currentRate,
@@ -212,20 +229,6 @@ export function formatTrendMessage(
   );
 
   const dirEmoji = trend.direction === "up" ? "📈" : trend.direction === "down" ? "📉" : "➡️";
-  const recEmoji: Record<string, string> = {
-    strong_buy: "🟢🟢",
-    buy: "🟢",
-    hold: "🟡",
-    watch: "🟠",
-    change_now: "🔴",
-  };
-  const recLabel: Record<string, string> = {
-    strong_buy: "¡EXCELENTE momento para cambiar!",
-    buy: "Buen momento para cambiar",
-    hold: "Mantener, sin urgencia",
-    watch: "Vigilar de cerca, tendencia bajista",
-    change_now: "⚠️ Cambiar YA, caída sostenida",
-  };
 
   let msg = `💱 *USD/MXN Status*\n\n`;
   msg += `Tasa mercado: *$${currentRate.toFixed(4)}*\n`;
@@ -244,7 +247,7 @@ export function formatTrendMessage(
   msg += `${dirEmoji} Tendencia: ${trend.direction} (${trend.consecutive_days} días)\n`;
   msg += `SMA 7d: $${trend.sma_7.toFixed(4)} | SMA 30d: $${trend.sma_30.toFixed(4)}\n`;
   msg += `Volatilidad: ${trend.volatility.toFixed(4)} | Momentum: ${trend.momentum >= 0 ? "+" : ""}${trend.momentum.toFixed(2)}%\n\n`;
-  msg += `${recEmoji[trend.recommendation] || "⚪"} *${recLabel[trend.recommendation] || "Sin datos suficientes"}*`;
+  msg += `${RECOMMENDATION_EMOJI[trend.recommendation] || "⚪"} *${RECOMMENDATION_LABEL[trend.recommendation] || "Sin datos suficientes"}*`;
 
   return msg;
 }

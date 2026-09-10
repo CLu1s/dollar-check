@@ -88,6 +88,28 @@ describe("GET /api/context", () => {
   });
 });
 
+describe("GET /api/dashboard", () => {
+  test("503 mientras el bot no arranca", async () => {
+    const res = await get("/api/dashboard");
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("JSON sin caché y sin los secrets de la config", async () => {
+    currentConfig = { ...config, telegram_bot_token: "123456:SECRET-TOKEN", oxr_app_id: "SECRET-OXR" };
+    saveRate(17.35, Math.floor(Date.now() / 1000));
+
+    const res = await get("/api/dashboard");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+
+    const body = await res.text();
+    expect(body).not.toContain("SECRET");
+    expect(JSON.parse(body).latest.rate).toBe(17.35);
+  });
+});
+
 test("rutas desconocidas dan 404", async () => {
   expect((await get("/nope")).status).toBe(404);
 });

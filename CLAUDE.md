@@ -8,6 +8,7 @@ Bot de Telegram que monitorea el tipo de cambio USD/MXN y envía alertas intelig
 - **Bot Framework:** grammy
 - **API:** Open Exchange Rates (plan gratuito, polling cada hora)
 - **Base de datos:** SQLite (en CIAB: `BOTTLE_SQLITE_MAIN`; en local: `./data/`)
+- **Dashboard:** React 19 + Recharts, servido por el mismo `Bun.serve` (HTML import de Bun)
 - **Deploy:** app de [Cloud in a Bottle](https://cloudinabottle.org) (CIAB) en el VPS, construida desde el `Dockerfile`
 
 ## Arquitectura
@@ -15,12 +16,15 @@ Bot de Telegram que monitorea el tipo de cambio USD/MXN y envía alertas intelig
 ```
 src/
 ├── index.ts      # Entry point, polling loop, graceful shutdown
-├── server.ts     # HTTP (Bun.serve :8080): /, /health, /api/context — base del dashboard
+├── server.ts     # HTTP (Bun.serve :8080): /, /health, /api/context, /api/dashboard
+├── dashboard.ts  # buildDashboard(): el JSON del dashboard y sus fórmulas (solo lectura)
+├── preview.ts    # Dashboard sin bot, con datos de ejemplo: `bun run web` (solo dev)
+├── web/          # Front del dashboard (index.html, App.tsx, components/, styles.css)
 ├── secrets.ts    # Lee los secrets de la app Secrets de CIAB → process.env
 ├── healthcheck.ts # checkRateFreshness(): ¿la DB sigue recibiendo tasas?
 ├── context.ts    # CLI: imprime buildContext() (dev local / bottle app ssh)
-├── types.ts      # Definiciones de tipos TypeScript + helper estimateDeelMxn()
-├── config.ts     # Carga de env, resolveDbPath() y utilidades de fecha
+├── types.ts      # Tipos (incluye DashboardData) + helper estimateDeelMxn()
+├── config.ts     # Carga de env (loadConfig/loadTunables), resolveDbPath() y fechas
 ├── database.ts   # Capa de datos con bun:sqlite
 ├── exchange.ts   # Cliente de Open Exchange Rates API
 ├── stats.ts      # Motor estadístico (SMA, EMA, volatilidad, momentum)
@@ -84,6 +88,29 @@ Deel cobra al cambiar USD→MXN:
 | `/set_fee <monto>` | Cambiar fee fija de Deel |
 | `/set_salary <monto>` | Cambiar sueldo en USD |
 
+## Dashboard
+
+`https://dollar-check.<zona>/`, detrás del login de owner de CIAB. Una página de
+solo lectura: recomendación y MXN de hoy vs. el último cambio, tarjetas (tasa,
+tasa Deel, costo de Deel, tendencia), la gráfica de la tasa con la línea de
+**empate con el último cambio**, y el historial con "vs. día promedio del mes".
+Las acciones (`/changed`, `/set_*`) siguen en Telegram.
+
+- **Las fórmulas viven en `src/dashboard.ts`**, con pruebas en
+  `src/tests/dashboard.test.ts`; el front solo pinta el JSON de `/api/dashboard`.
+- **Días y meses se agrupan en la zona de la config** (`America/Mexico_City`),
+  no en UTC como `getDailyRates()`: lo de 18:00–24:00 caería en el día siguiente.
+- **El historial es una fila por mes** (la de `id` más alto) y se ordena por
+  `month`. La columna `rate` de un `/changed` diferido es la tasa de OXR del
+  momento del comando, así que el dashboard no la usa.
+- **Nunca `...config` en el payload**: `BotConfig` trae el token de Telegram y
+  el app id de OXR. `buildDashboard()` recibe `BotSettings` y copia campo por campo.
+- **`GET /` y el HTML llegan inyectados en `startServer()`**: solo `index.ts` y
+  `preview.ts` importan `./web/index.html`. Sin él, `/` contesta una línea de
+  texto (lo que usan las pruebas; también le basta al sondeo de CIAB).
+- Colores y marcas siguen la paleta de referencia de la skill de dataviz;
+  los estados siempre llevan ícono + texto, nunca solo color.
+
 ## Setup
 
 1. Obtener token de bot en Telegram vía @BotFather
@@ -106,6 +133,14 @@ Puntos que hay que tener presentes al tocar el código:
 - **La app tiene que contestar HTTP.** CIAB sondea `GET /` los primeros 60s;
   si no responde la marca en error y no la levanta tras un reboot. Por eso
   `src/index.ts` arranca `startServer()` antes de pedir secrets o crear el bot.
+- **El contenedor corre un bundle, no `src/`.** El `Dockerfile` hace
+  `bun run build` (server + dashboard empaquetados AOT en `dist/`, grammy
+  incluido) y arranca `bun --no-install index.js` **desde `dist/`**: Bun busca
+  los archivos del dashboard relativos al directorio de trabajo, y desde otro
+  cwd el proceso muere con `Bundled file "./index-….js" not found`. Así un error
+  del front falla el build y no el `GET /` en runtime.
+- **Nunca correr `dist/index.js` en local**: arranca el bot (409 con CIAB). Para
+  probar el bundle, empaqueta `src/preview.ts` y córrelo desde su carpeta.
 - **CIAB no inyecta variables propias**, solo `BOTTLE_*`. Los 3 requeridos llegan
   de la app Secrets como `DOLLAR_CHECK_<NOMBRE>` vía `loadBottleSecrets()`; lo
   demás usa los defaults de `config.ts` y los `/set_*` persistidos. Una key
@@ -147,8 +182,16 @@ respuesta es equivalente a la del viejo `/analyze` de Telegram.
 
 ### Desarrollo
 ```bash
-bun run dev
+bun run web     # dashboard sin bot en :3000, con HMR y datos de ejemplo (data/preview.db)
+bun run test    # = bun test src (hay pruebas viejas en .claude/worktrees/)
+bun run build   # el bundle de producción en dist/ (lo que corre el contenedor)
+bun run dev     # el bot completo: ¡usa el token de producción → 409 con CIAB!
 ```
+
+`bun run web` no pide secrets, no llama a OXR ni arranca el bot. Variables:
+`PREVIEW_DB` (otra base; no usa `DB_PATH` porque Bun carga `.env` y ahí puede
+apuntar a tu base real), `PREVIEW_SEED=0` (sin datos de ejemplo, para ver los
+estados vacíos) y `PREVIEW_PORT`.
 
 ## Variables de Entorno
 
@@ -170,6 +213,7 @@ etc.) y el resto usa su default; en local todo sale de `.env`.
 | `TZ` | No | America/Mexico_City | Zona horaria |
 | `DB_PATH` | No | data/dollar-check.db | Ruta del SQLite fuera de CIAB |
 | `PORT` | No | 8080 | Puerto HTTP (debe coincidir con `port` del manifest) |
+| `PREVIEW_DB` / `PREVIEW_SEED` / `PREVIEW_PORT` | No | `data/preview.db` / on / 3000 | Solo `bun run web` |
 | `BOTTLE_*` | — | — | Los inyecta CIAB: `BOTTLE_SQLITE_MAIN` (gana a `DB_PATH`), `BOTTLE_ROUTER_URL` y `BOTTLE_APP_TOKEN` (secrets) |
 
 ## Datos Importantes

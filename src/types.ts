@@ -74,6 +74,9 @@ export interface BotConfig {
   default_fee_usd: number; // Deel's fee in USD (~106.65)
 }
 
+/** BotConfig sin los secrets: lo único que necesitan el dashboard y /api/context. */
+export type BotSettings = Omit<BotConfig, "telegram_bot_token" | "telegram_chat_id" | "oxr_app_id">;
+
 export interface DailyRate {
   date: string;
   avg_rate: number;
@@ -91,6 +94,72 @@ export interface ExchangeStats {
   total_usd_exchanged: number;
   total_mxn_received: number;
   potential_gain_loss_vs_avg: number;
+}
+
+// ---- Dashboard (GET /api/dashboard) ----
+// Lo arma src/dashboard.ts y lo pinta src/web/ (con `import type`, así el
+// navegador no arrastra bun:sqlite). Tasas en MXN/USD, montos en MXN salvo
+// que el nombre diga usd. Los null son "no hay dato", nunca cero.
+
+export interface DailyPoint {
+  date: string; // YYYY-MM-DD en la zona de la config
+  avg: number;
+  min: number;
+  max: number;
+  points: number; // lecturas ese día (1 si vino de /seed, ~24 si vivo)
+}
+
+export interface DashboardHistoryRow {
+  month: string; // YYYY-MM
+  effective_rate: number;
+  amount_usd: number;
+  amount_mxn: number;
+  market_avg: number | null; // promedio de los promedios diarios del mes
+  days_with_data: number;
+  vs_avg_mxn: number | null; // vs. cambiar en un día promedio del mes; null con pocos días
+}
+
+export interface DashboardData {
+  generated_at: string;
+  settings: {
+    salary_usd: number;
+    fee_usd: number;
+    spread_percent: number;
+    threshold_percent: number;
+    poll_interval_minutes: number;
+    timezone: string;
+  };
+  health: { ok: boolean; last_rate_age_minutes: number | null; message: string };
+  latest: { rate: number; timestamp: number } | null;
+  today: {
+    deel_rate: number;
+    net_usd: number;
+    mxn: number;
+    deel_cost: { total_mxn: number; fee_mxn: number; spread_mxn: number };
+  } | null;
+  last_exchange: { month: string; effective_rate: number; amount_usd: number; amount_mxn: number } | null;
+  vs_last: { mxn: number; percent: number | null } | null;
+  break_even_rate: number | null;
+  trend: {
+    direction: TrendAnalysis["direction"];
+    consecutive_days: number;
+    momentum: number;
+    sma_7: number;
+    sma_30: number;
+    recommendation: AlertRecommendation;
+    emoji: string;
+    label: string;
+  } | null;
+  month: { current: string; exchanged: boolean; days_to_payday: number; last_week: boolean };
+  daily: DailyPoint[]; // últimos 365 días, del más viejo al más nuevo
+  history: DashboardHistoryRow[]; // una fila por mes, del más reciente al más viejo
+  totals: {
+    count: number;
+    avg_effective_rate: number;
+    total_mxn: number;
+    best_month: string;
+    worst_month: string;
+  } | null;
 }
 
 // ---- Deel Estimation Helpers ----

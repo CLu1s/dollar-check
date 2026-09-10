@@ -6,12 +6,21 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
+    "web": "bun --hot src/preview.ts",
+    "build": "bun build --target=bun --production --keep-names --sourcemap=linked --outdir=dist ./src/index.ts",
+    "test": "bun test src",
     "db:reset": "rm -f data/dollar-check.db && bun run src/index.ts"
   },
   "dependencies": {
     "grammy": "^1.21.1"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-is": "^19.3.0",
+    "recharts": "^3.10.1"
   }
 }

@@ -10,6 +10,7 @@ import { fetchCurrentRate } from "./exchange";
 import { evaluateAlerts } from "./alerts";
 import { createBot, sendAlert } from "./bot";
 import type { BotConfig } from "./types";
+import dashboard from "./web/index.html";
 
 console.log("🤑 Dollar Check Bot starting...");
 
@@ -19,7 +20,7 @@ console.log("✅ Database initialized");
 
 // HTTP antes que nada: CIAB sondea GET / durante los primeros 60s
 let readyConfig: BotConfig | null = null;
-const server = startServer(() => readyConfig);
+const server = startServer(() => readyConfig, undefined, dashboard);
 console.log(`✅ HTTP listening on :${server.port}`);
 
 // Secrets de CIAB → process.env (fuera de CIAB no hace nada y manda .env)

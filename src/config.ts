@@ -2,7 +2,7 @@
 // Dollar Check Bot - Configuration
 // ============================================
 
-import type { BotConfig } from "./types";
+import type { BotConfig, BotSettings } from "./types";
 
 function requireEnv(key: string): string {
   const value = process.env[key];
@@ -21,6 +21,16 @@ export function loadConfig(): BotConfig {
     telegram_bot_token: requireEnv("TELEGRAM_BOT_TOKEN"),
     telegram_chat_id: requireEnv("TELEGRAM_CHAT_ID"),
     oxr_app_id: requireEnv("OXR_APP_ID"),
+    ...loadTunables(),
+  };
+}
+
+/**
+ * Todo menos los secrets. Lo usa src/preview.ts para levantar el dashboard
+ * sin tokens.
+ */
+export function loadTunables(): BotSettings {
+  return {
     poll_interval_minutes: parseInt(optionalEnv("POLL_INTERVAL_MINUTES", "60")),
     alert_threshold_percent: parseFloat(optionalEnv("ALERT_THRESHOLD_PERCENT", "0.15")),
     trend_decline_days: parseInt(optionalEnv("TREND_DECLINE_DAYS", "3")),

@@ -4,14 +4,14 @@
 
 import { getDailyRates, getLastSalaryExchange, getSalaryExchangeHistory, getLatestRate } from "./database";
 import { analyzeTrend } from "./stats";
-import type { BotConfig } from "./types";
+import type { BotConfig, BotSettings } from "./types";
 import { estimateDeelMxn } from "./types";
 
 /**
  * Build a data snapshot for Claude to analyze.
  * Lo usan /analyze (dentro del bot) y src/context.ts (para la skill del Mac).
  */
-export function buildContext(config: BotConfig): string {
+export function buildContext(config: BotSettings): string {
   const dailyRates = getDailyRates(30);
   const latestRate = getLatestRate();
   const lastExchange = getLastSalaryExchange();
