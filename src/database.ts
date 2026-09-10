@@ -184,15 +184,19 @@ export function saveSalaryExchange(exchange: Omit<SalaryExchange, "id">): void {
     );
 }
 
+// "Último" es el del mes más reciente, no el último insertado: exchanged_at es
+// la hora del /changed, así que un mes viejo registrado en diferido quedaría
+// como referencia de las alertas. Dentro del mismo mes gana el id más alto
+// (un /changed corregido).
 export function getLastSalaryExchange(): SalaryExchange | null {
   return getDb()
-    .prepare("SELECT * FROM salary_exchanges ORDER BY exchanged_at DESC LIMIT 1")
+    .prepare("SELECT * FROM salary_exchanges ORDER BY month DESC, id DESC LIMIT 1")
     .get() as SalaryExchange | null;
 }
 
 export function getSalaryExchangeHistory(limit: number = 12): SalaryExchange[] {
   return getDb()
-    .prepare("SELECT * FROM salary_exchanges ORDER BY exchanged_at DESC LIMIT ?")
+    .prepare("SELECT * FROM salary_exchanges ORDER BY month DESC, id DESC LIMIT ?")
     .all(limit) as SalaryExchange[];
 }
 

@@ -50,8 +50,14 @@ export async function fetchCurrentRate(appId: string): Promise<number> {
   }
 }
 
-export async function fetchHistoricalRate(appId: string, date: string): Promise<number> {
-  // date format: YYYY-MM-DD
+/**
+ * Tasa de cierre de un día (YYYY-MM-DD, en UTC). Devuelve también el timestamp
+ * de OXR: es el que hay que guardar, porque ubica la tasa en su día real.
+ */
+export async function fetchHistoricalRate(
+  appId: string,
+  date: string
+): Promise<{ rate: number; timestamp: number }> {
   const url = `https://openexchangerates.org/api/historical/${date}.json?app_id=${appId}&symbols=MXN`;
 
   const response = await fetch(url);
@@ -61,5 +67,5 @@ export async function fetchHistoricalRate(appId: string, date: string): Promise<
   }
 
   const data: OXRResponse = await response.json();
-  return data.rates.MXN;
+  return { rate: data.rates.MXN, timestamp: data.timestamp };
 }

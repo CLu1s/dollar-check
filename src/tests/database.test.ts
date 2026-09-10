@@ -145,6 +145,34 @@ describe("Salary Exchanges", () => {
     expect(history[1].month).toBe("2025-12");
   });
 
+  test("a past month registered later does not become the last exchange", () => {
+    saveSalaryExchange({
+      rate: 17.35, deel_rate: 17.25, gross_usd: 6097.24, fee_usd: 106.65,
+      amount_usd: 5990.59, amount_mxn: 103333.04, spread_percent: 0.577,
+      effective_rate: 17.2494, exchanged_at: "2026-09-01T12:00:00Z", month: "2026-08",
+    });
+    // Backfill de junio con /changed ... 2026-06, tecleado días después
+    saveSalaryExchange({
+      rate: 17.60, deel_rate: 17.10, gross_usd: 6097.24, fee_usd: 106.65,
+      amount_usd: 5990.59, amount_mxn: 102439.09, spread_percent: 2.84,
+      effective_rate: 17.10, exchanged_at: "2026-09-05T12:00:00Z", month: "2026-06",
+    });
+
+    expect(getLastSalaryExchange()!.month).toBe("2026-08");
+    expect(getSalaryExchangeHistory(12).map((e) => e.month)).toEqual(["2026-08", "2026-06"]);
+  });
+
+  test("a corrected /changed for the same month wins over the first one", () => {
+    const base = {
+      rate: 17.35, gross_usd: 6097.24, fee_usd: 106.65, amount_usd: 5990.59,
+      spread_percent: 0.577, exchanged_at: "2026-09-01T12:00:00Z", month: "2026-08",
+    };
+    saveSalaryExchange({ ...base, deel_rate: 17.52, amount_mxn: 104955.14, effective_rate: 17.52 });
+    saveSalaryExchange({ ...base, deel_rate: 17.25, amount_mxn: 103333.04, effective_rate: 17.2494 });
+
+    expect(getLastSalaryExchange()!.deel_rate).toBe(17.25);
+  });
+
   test("should calculate exchange stats correctly", () => {
     saveSalaryExchange({
       rate: 17.10, deel_rate: 16.97, gross_usd: 6000, fee_usd: 100,

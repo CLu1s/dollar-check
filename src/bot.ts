@@ -230,10 +230,11 @@ export function createBot(config: BotConfig): Bot {
       const date = new Date();
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split("T")[0];
-      const timestamp = Math.floor(date.getTime() / 1000);
 
       try {
-        const rate = await fetchHistoricalRate(config.oxr_app_id, dateStr);
+        // El timestamp de OXR (cierre del día), no "ahora − i días": sembrando
+        // después de las 18:00 de México, este último cae un día antes.
+        const { rate, timestamp } = await fetchHistoricalRate(config.oxr_app_id, dateStr);
         saveRate(rate, timestamp, "openexchangerates-historical");
         loaded++;
       } catch (error) {
