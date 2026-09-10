@@ -3,25 +3,37 @@
 // ============================================
 
 import { initDatabase, applyPersistedSettings } from "./database";
-import { loadConfig } from "./config";
+import { loadConfig, resolveDbPath } from "./config";
+import { loadBottleSecrets } from "./secrets";
+import { startServer } from "./server";
 import { fetchCurrentRate } from "./exchange";
 import { evaluateAlerts } from "./alerts";
 import { createBot, sendAlert } from "./bot";
+import type { BotConfig } from "./types";
 
 console.log("🤑 Dollar Check Bot starting...");
 
+// Initialize database (en CIAB la ruta viene de BOTTLE_SQLITE_MAIN)
+const db = initDatabase(resolveDbPath());
+console.log("✅ Database initialized");
+
+// HTTP antes que nada: CIAB sondea GET / durante los primeros 60s
+let readyConfig: BotConfig | null = null;
+const server = startServer(() => readyConfig);
+console.log(`✅ HTTP listening on :${server.port}`);
+
+// Secrets de CIAB → process.env (fuera de CIAB no hace nada y manda .env)
+await loadBottleSecrets();
+
 // Load config from environment
 const config = loadConfig();
-
-// Initialize database (DB_PATH lets the container point it at a mounted volume)
-const db = initDatabase(process.env.DB_PATH || undefined);
-console.log("✅ Database initialized");
 
 // Restore persisted settings (/set_threshold, /set_spread, /set_fee, /set_salary)
 applyPersistedSettings(config);
 
 // Create and start bot
 const bot = createBot(config);
+readyConfig = config;
 
 // ---- Polling Loop ----
 async function pollAndAlert(): Promise<void> {
@@ -63,17 +75,14 @@ bot.start({
   },
 });
 
-// Graceful shutdown
-process.on("SIGINT", () => {
+// Graceful shutdown (CIAB da 10s entre SIGTERM y kill)
+function shutdown(): void {
   console.log("\n🛑 Shutting down...");
+  server.stop();
   bot.stop();
   db.close();
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  console.log("\n🛑 Shutting down...");
-  bot.stop();
-  db.close();
-  process.exit(0);
-});
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

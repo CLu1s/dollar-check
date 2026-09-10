@@ -32,6 +32,15 @@ export function loadConfig(): BotConfig {
   };
 }
 
+/**
+ * Ruta del SQLite. En CIAB la fija el manifest (`[data] sqlite = ["main"]` →
+ * BOTTLE_SQLITE_MAIN, dentro del directorio que entra al backup). DB_PATH queda
+ * para correr fuera de CIAB; sin ninguna, initDatabase usa data/dollar-check.db.
+ */
+export function resolveDbPath(): string | undefined {
+  return process.env.BOTTLE_SQLITE_MAIN || process.env.DB_PATH || undefined;
+}
+
 export function isLastWeekOfMonth(): boolean {
   const now = new Date();
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();

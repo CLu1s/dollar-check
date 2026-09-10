@@ -2,7 +2,7 @@
 node_modules
 dist
 
-# Estado y secretos: van por volumen y env_file, nunca en la imagen
+# Estado y secretos: nunca en la imagen (en CIAB llegan por BOTTLE_* y la app Secrets)
 data
 backups
 logs
@@ -19,9 +19,9 @@ logs
 .claude
 .DS_Store
 
-# Infra y docs: no hacen falta en runtime
-Dockerfile
-docker-compose.yml
+# Infra y docs: no hacen falta en runtime.
+# El Dockerfile no se lista: buildah lo lee del contexto.
+cloudinabottle.toml
 .dockerignore
 scripts
 *.md

@@ -1,0 +1,36 @@
+# Manifest de Cloud in a Bottle: https://cloudinabottle.org/docs/creating_an_app/manifest_spec.html
+
+[app]
+name = "dollar-check"
+version = "1.0.0"
+description = "Alertas USD/MXN para el cambio de sueldo vía Deel (bot de Telegram)"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+# Solo lo usa `bottle app diagnostics`; al arrancar, CIAB sondea "/".
+health_check = "/health"
+
+[resources]
+memory_mb = 256
+build_memory_mb = 512
+cpu_cores = 0.25
+
+[data]
+# → BOTTLE_SQLITE_MAIN=/data/app_data/dollar-check/sqlite/main.db (entra al backup)
+sqlite = ["main"]
+
+# Secrets: src/secrets.ts los pide al arrancar. El namespace de la app Secrets
+# es global, por eso llevan prefijo. Una key nueva aquí necesita aprobar el
+# grant en CIAB.
+[[services.v2.consumes]]
+service = "github.com/imbue-openhost/openhost/services/secrets"
+shortname = "secrets"
+version = ">=0.1.0"
+grants = [
+  { key = "DOLLAR_CHECK_TELEGRAM_BOT_TOKEN" },
+  { key = "DOLLAR_CHECK_TELEGRAM_CHAT_ID" },
+  { key = "DOLLAR_CHECK_OXR_APP_ID" },
+]

@@ -1,217 +1,144 @@
 # Deploy — Dollar Check Bot
 
-Docker sobre un VPS Linux. Instalación y actualización por **git push/pull**:
-el repo es la única fuente de verdad, el VPS solo jala y reconstruye.
+App de [Cloud in a Bottle](https://cloudinabottle.org) (CIAB) en el VPS. CIAB
+clona este repo de GitHub, construye el `Dockerfile` con Podman y lo corre según
+`cloudinabottle.toml`. El repo es la única fuente de verdad.
 
 ```
 dollar-check/                  raíz del repo = contexto de build
+├── cloudinabottle.toml        manifest de CIAB (puerto, SQLite, recursos, grants)
 ├── Dockerfile
-├── docker-compose.yml
 ├── .dockerignore
-├── .env                       secretos — NO versionado, se crea en cada host
+├── .env                       solo dev local — NO versionado
 ├── DEPLOY.md                  este archivo
 ├── CLAUDE.md                  documentación del bot en sí
-├── src/
-└── scripts/
-    ├── deploy.sh              push + pull remoto (correr desde el Mac)
-    ├── install.sh             primera instalación (correr en el VPS)
-    ├── backup.sh              volcar el volumen a un tar.gz
-    ├── restore.sh             restaurar un tar.gz al volumen
-    └── *.sh                   legado de launchd en macOS, ya no se usan
+└── src/
 ```
 
 ---
 
-## Flujo normal: actualizar el VPS
+## Crear la app (primera vez)
 
-Desde el Mac, con todo commiteado:
+1. **Secrets.** En la app Secrets de CIAB (`https://secrets.<zona>`) crear:
 
-```bash
-bash scripts/deploy.sh
-```
+   | Key | Valor |
+   |---|---|
+   | `DOLLAR_CHECK_TELEGRAM_BOT_TOKEN` | token de @BotFather |
+   | `DOLLAR_CHECK_TELEGRAM_CHAT_ID` | tu chat ID (@userinfobot) |
+   | `DOLLAR_CHECK_OXR_APP_ID` | App ID de Open Exchange Rates |
 
-Hace tres cosas: verifica que el repo esté limpio y en `main`, `git push origin main`,
-y por SSH en el VPS `git fetch` + `git reset --hard origin/main` + `docker compose up -d --build`.
+   Llevan prefijo porque las keys de la app Secrets son globales a todas las apps.
 
-Usa `reset --hard` a propósito: el VPS es un espejo desechable de `main`, no un
-lugar donde editar. Los datos no viven ahí sino en el named volume, así que
-resetear el checkout no puede perder nada.
+2. **Una sola instancia.** Apaga cualquier otra copia del bot antes de seguir
+   (dev local, launchd viejo, el contenedor de Docker Compose): dos long-pollers
+   con el mismo token dan `409 Conflict` en Telegram.
 
-Configurable por variables de entorno:
+3. **Deploy.** "Deploy New App" en el dashboard de CIAB con
+   `https://github.com/CLu1s/dollar-check` (URL HTTPS; CIAB no acepta SSH) y
+   aprueba los grants de Secrets en la página de instalación. Por CLI:
 
-```bash
-VPS_HOST=1.2.3.4 VPS_USER=deploy BRANCH=staging bash scripts/deploy.sh
-```
+   ```bash
+   bottle app deploy https://github.com/CLu1s/dollar-check --name dollar-check --grant-permissions-v2 --wait
+   ```
 
-Si prefieres a mano:
+4. **Sembrar el histórico — el paso que se olvida.** La base arranca vacía, y sin
+   histórico `/status`, `/month` y `/analyze` no sirven: las medias móviles,
+   la volatilidad y el momentum necesitan días previos. En Telegram:
+
+   ```
+   /seed 30
+   ```
+
+   Descarga 30 días de tasas de OXR (una llamada por día, ~15 s). Si vienes de
+   otra instalación, vuelve a registrar los cambios con
+   `/changed <tasa> <bruto> <mxn> <tarifa> <YYYY-MM>` usando el mismo mes que
+   mostraba `/history`, y reaplica los `/set_*` que no estén en su default.
+
+> **Cuota de OXR.** El plan gratuito da **1000 llamadas al mes** y el polling
+> horario ya consume ~720. Cada arranque de la app gasta 1. `/seed 30` cabe de
+> sobra; `/seed 90` queda justo; `/seed 365` **te pasa del límite** y el bot se
+> queda ciego el resto del mes.
+
+---
+
+## Actualizar
+
+CIAB no se entera solo de los push. Con todo en `main`:
 
 ```bash
 git push origin main
-ssh luis@46.225.30.60 'cd ~/projects/dollar-check && git pull && docker compose up -d --build'
 ```
 
----
-
-## Primera instalación en un VPS nuevo
-
-### 1. Docker
+y luego "update" en la página de la app en CIAB, o:
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER    # sal y vuelve a entrar por SSH
+bottle app reload dollar-check --update --wait
 ```
 
-### 2. Clave SSH para GitHub
-
-El VPS necesita poder clonar el repo. Si es privado:
-
-```bash
-ssh-keygen -t ed25519 -C "vps-dollar-check"
-cat ~/.ssh/id_ed25519.pub    # pégala en GitHub > Settings > Deploy keys (read-only)
-```
-
-### 3. Clonar
-
-```bash
-git clone git@github.com:CLu1s/dollar-check.git ~/projects/dollar-check
-cd ~/projects/dollar-check
-```
-
-### 4. Configurar `.env`
-
-`.env` NO está en git (a propósito: son secretos). Se crea una vez por host y
-sobrevive a todos los `git pull`.
-
-```bash
-cp .env.example .env
-chmod 600 .env
-nano .env
-```
-
-Obligatorias: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `OXR_APP_ID`.
-Deja `TZ=America/Mexico_City` aunque el VPS esté en UTC: el ciclo mensual y la
-lógica de "última semana del mes" dependen de la hora de México.
-
-### 5. Instalar
-
-```bash
-bash scripts/install.sh
-```
-
-Verifica Docker, valida que `.env` no traiga placeholders, construye la imagen,
-levanta el contenedor y espera el primer poll de OXR. Es idempotente.
-
-### 6. Sembrar el histórico — **el paso que se olvida**
-
-En una instalación nueva la base arranca **vacía**. Sin histórico, `/status`,
-`/month` y `/analyze` no sirven: las medias móviles de 7 y 30 días, la
-volatilidad y el momentum necesitan días previos para significar algo.
-
-En Telegram, mándale al bot:
-
-```
-/seed 30
-```
-
-Descarga 30 días de tasas históricas de OXR (una llamada por día, 500 ms de
-separación, ~15 s). Confirma con `/status`.
-
-> **Cuota de OXR.** El plan gratuito da **1000 llamadas al mes** y el polling
-> horario ya consume ~720. `/seed 30` cabe de sobra (~750 total). `/seed 90`
-> queda justo. `/seed 365` **te pasa del límite** y el bot se queda ciego el
-> resto del mes.
-
-Si estás migrando una instalación que ya tenía datos, **no siembres**: restaura
-el respaldo, que trae la historia completa.
+Eso hace `git pull`, reconstruye la imagen y reinicia el contenedor. Si el
+manifest agregó una key a `grants`, hay que aprobarla (el `reload --update` del
+CLI la aprueba solo).
 
 ---
 
 ## Operación
 
-```bash
-docker compose logs -f bot      # logs en vivo
-docker compose ps               # estado + healthy/unhealthy
-docker compose restart bot
-docker compose down             # detener (los datos siguen en el volumen)
-docker compose up -d --build    # reconstruir
-```
+| Qué | Cómo |
+|---|---|
+| Logs | página de la app en CIAB, o `bottle app logs dollar-check --follow` |
+| Salud | `https://dollar-check.<zona>/health` (200 = llegan tasas; 503 = no) |
+| Parar | `bottle app stop dollar-check` (los datos se quedan) |
+| Arrancar | `bottle app reload dollar-check` |
+| Shell en el contenedor | `bottle app ssh dollar-check` |
+| Snapshot para `/analyze` | `bottle curl https://dollar-check.<zona>/api/context` |
 
-**Solo puede haber UNA instancia viva.** El bot usa long polling; dos procesos
-con el mismo token dan `409 Conflict` en Telegram. Antes de levantar el VPS,
-apaga cualquier instancia local y el launchd viejo.
+Todas las rutas HTTP están detrás del login de owner de CIAB.
+
+**`bottle app remove dollar-check` borra los datos** (el SQLite incluido) salvo
+que pases `--keep-data`.
 
 ---
 
-## Respaldos
+## Datos y respaldos
 
-Los datos viven en el named volume `dollar-check-data`, fuera del contenedor y
-fuera del checkout de git. `docker compose down` y `git reset --hard` no los
-tocan; `docker volume rm dollar-check-data` sí los borra.
+El SQLite vive en `BOTTLE_SQLITE_MAIN` (`/data/app_data/dollar-check/sqlite/main.db`
+dentro del contenedor), en el almacenamiento permanente de la app. Sobrevive a
+reloads, updates y reboots.
 
-```bash
-bash scripts/backup.sh                    # -> ./backups/dollar-check-<fecha>.tar.gz
-bash scripts/restore.sh backups/dollar-check-20260826-071815.tar.gz
-```
-
-`backup.sh` hace `PRAGMA wal_checkpoint(TRUNCATE)` antes de copiar, para que el
-`.db` esté completo sin depender de los `-wal`/`-shm`. Conserva los últimos 14.
-`restore.sh` detiene el bot antes de escribir (restaurar con un escritor activo
-corrompe el SQLite) y hace `chown` a 1000:1000.
-
-Traer un respaldo del VPS al Mac:
-
-```bash
-ssh luis@46.225.30.60 'cd ~/projects/dollar-check && bash scripts/backup.sh'
-scp luis@46.225.30.60:'~/projects/dollar-check/backups/*.tar.gz' ./backups/
-```
-
-Cron diario en el VPS:
-
-```cron
-0 4 * * * cd /home/luis/projects/dollar-check && bash scripts/backup.sh >> /var/log/dollar-check-backup.log 2>&1
-```
+El respaldo lo hace la app Backup de CIAB (restic hacia S3, B2, SFTP…), pero
+**no respalda nada hasta que la configuras**. Verifica que esté activa. restic
+no hace checkpoint del WAL; con una escritura por hora el riesgo de una copia
+inconsistente es mínimo.
 
 ---
 
 ## Decisiones de diseño (y por qué)
 
-**Named volume, no bind mount.** El contenedor corre como usuario no-root `bun`
-(uid 1000). Con un bind mount en Linux el directorio del host tendría que
-pertenecer a uid 1000 o el bot no puede escribir — falla que en macOS no se ve
-porque Docker Desktop virtualiza los permisos. El named volume hereda el owner
-que el `Dockerfile` deja con `mkdir -p /app/data && chown -R bun:bun /app`. Ese
-`chown` **antes** del `VOLUME` es lo que lo hace funcionar: no lo quites.
+**Servidor HTTP aunque el bot no lo necesite.** CIAB define una app como un
+contenedor accesible por HTTP: tras arrancar sondea `GET /` durante 60 s y, si
+no contesta, la marca en error y no la vuelve a levantar tras un reboot. Por eso
+`src/index.ts` arranca `startServer()` antes de pedir secrets o crear el bot. Ese
+mismo servidor servirá el dashboard (Fase 2).
 
-**El volumen sobrevive al `git reset --hard`.** Es lo que permite que el deploy
-sea destructivo con el código y conservador con los datos.
+**Un solo proceso.** Bot, polling y HTTP en el mismo proceso: es el modelo de CIAB
+(no hay tipo "worker") y deja un solo escritor del SQLite y una sola `config` en
+memoria que ven el bot y la web a la vez.
 
-**`DB_PATH`.** `src/index.ts` hace `initDatabase(process.env.DB_PATH || undefined)`.
-El compose lo fija a `/app/data/dollar-check.db`. Sin la variable el default
-sigue siendo `data/dollar-check.db` relativo al cwd, que es lo que usa
-`bun run dev` en local.
+**Secrets por HTTP.** CIAB solo inyecta variables `BOTTLE_*`. `src/secrets.ts`
+pide las 3 keys al router con `BOTTLE_APP_TOKEN` y las copia a `process.env`, así
+`loadConfig()` no cambia. Reintenta errores de red/5xx (el router puede tardar
+tras un reboot); un 403 falla de inmediato porque es de configuración.
 
-**`.env` fuera de git.** Se crea una vez por host y sobrevive a los pulls. Por
-eso `install.sh` falla ruidosamente si detecta placeholders en lugar de arrancar
-un bot roto.
+**Root dentro del contenedor.** CIAB monta los datos con `:idmap` y ahí se ven
+como root: un `USER` no-root no podría escribir el SQLite. Con Podman rootless,
+ese root es el usuario sin privilegios `host` del VPS.
 
-**Sin puertos expuestos.** Telegram (long polling) y OXR son conexiones
-salientes. No hay que abrir el firewall ni poner un reverse proxy.
+**Sin `VOLUME` ni `HEALTHCHECK`.** `VOLUME` crearía un volumen anónimo fuera del
+backup. Podman construye en formato OCI e ignora `HEALTHCHECK`; la salud se ve en
+`/health`, que mira si la última tasa tiene menos de 3 intervalos de polling.
 
-**`init: true`.** `src/analyze.ts` hace `Bun.spawn`; sin un reaper en PID 1 los
-hijos quedan zombie. También asegura que SIGTERM llegue limpio al
-`process.on("SIGTERM")` de `index.ts`, que cierra la DB y hace checkpoint del WAL.
-
-**Rootfs de solo lectura.** `read_only: true` con `tmpfs` en `/tmp` (que sí
-necesita `/analyze`) y el volumen como única zona escribible persistente. Más
-`cap_drop: ALL` y `no-new-privileges`.
-
-**Healthcheck sin HTTP.** `src/healthcheck.ts` mira `MAX(created_at)` de
-`exchange_rates`: si el bot dejó de registrar tasas por más de 3 intervalos de
-polling, marca unhealthy. Detecta el caso feo — proceso vivo pero atorado — que
-`restart: unless-stopped` por sí solo no ve.
-
-**Rotación de logs.** `max-size: 10m`, `max-file: 3`. Sin esto los logs JSON se
-comen el disco de un VPS chico en semanas.
+**`TZ=America/Mexico_City`.** El ciclo mensual y la "última semana del mes"
+dependen de la hora de México aunque el VPS esté en UTC.
 
 ---
 
@@ -219,13 +146,8 @@ comen el disco de un VPS chico en semanas.
 
 **`/analyze` no funciona en el contenedor.** `src/analyze.ts` invoca el CLI de
 `claude` con `Bun.spawn` y ese binario no está en la imagen. Falla con ENOENT;
-los otros 14 comandos funcionan normal. Dos caminos posibles, ninguno
-implementado:
-
-1. Migrar a la API de Anthropic con el SDK — lo correcto para un contenedor,
-   pero necesita `ANTHROPIC_API_KEY` y es costo por token.
-2. Instalar el CLI en la imagen y montar credenciales — sin costo extra, pero
-   acopla el contenedor a una sesión de Claude y engorda la imagen.
+los otros 14 comandos funcionan normal. El reemplazo es la skill `/analyze` de
+Claude Code, que lee `GET /api/context`.
 
 ---
 
@@ -233,11 +155,11 @@ implementado:
 
 | Síntoma | Causa y arreglo |
 |---|---|
-| `409 Conflict` de Telegram | Dos long-pollers con el mismo token. Apaga la instancia local o el launchd viejo. |
-| `Missing required environment variable` | Falta una clave en `.env` del host. `.env` no viaja por git: hay que crearlo en cada máquina. |
-| Contenedor `unhealthy` | >3 intervalos sin registrar tasas. Revisa los logs: casi siempre `OXR_APP_ID` inválido o cuota agotada. |
-| `exec format error` | Construiste en el Mac (arm64) para un VPS amd64. Construye **en el VPS** (que es lo que hace `deploy.sh`) o usa `--platform linux/amd64`. |
-| `deploy.sh` dice "cambios sin commitear" | Es a propósito: si el VPS jala de GitHub, lo que no esté empujado no llega. Commitea primero. |
-| `Permission denied (publickey)` en el VPS | Falta la deploy key de GitHub en el VPS (paso 2). |
-| El bot no puede escribir la DB | Estás con bind mount en vez del named volume. Vuelve al named volume o `chown -R 1000:1000`. |
+| `409 Conflict` de Telegram | Dos long-pollers con el mismo token. Apaga la otra instancia (dev local, launchd, Docker Compose). |
+| `[Secrets] … rechazó la petición (403)` | Grants sin aprobar. Apruébalos en la página de la app y recárgala. |
+| `Missing required environment variable` | Falta una key en la app Secrets: el log previo `[Secrets] Faltan…` dice cuál. |
+| App en error: "not responding to HTTP" | El proceso murió antes de 60 s. Revisa los logs: casi siempre secrets o grants. |
+| `unable to open database file` al arrancar | Alguien agregó `USER` al `Dockerfile`. Tiene que correr como root (ver arriba). |
+| `/health` en 503 con la app viva | >3 intervalos sin tasas: `OXR_APP_ID` inválido o cuota agotada. |
 | `/status` sin medias móviles | Base sin histórico: falta `/seed 30`. |
+| Falla el build | Límite de 512 MB y 5 min por build (`build_memory_mb` en el manifest). |

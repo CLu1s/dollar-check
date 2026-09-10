@@ -7,16 +7,20 @@ Bot de Telegram que monitorea el tipo de cambio USD/MXN y envía alertas intelig
 - **Runtime:** Bun (con `bun:sqlite` integrado)
 - **Bot Framework:** grammy
 - **API:** Open Exchange Rates (plan gratuito, polling cada hora)
-- **Base de datos:** SQLite (persistida en `./data/`)
-- **Deploy:** Docker Compose (imagen `dollar-check:latest`)
+- **Base de datos:** SQLite (en CIAB: `BOTTLE_SQLITE_MAIN`; en local: `./data/`)
+- **Deploy:** app de [Cloud in a Bottle](https://cloudinabottle.org) (CIAB) en el VPS, construida desde el `Dockerfile`
 
 ## Arquitectura
 
 ```
 src/
 ├── index.ts      # Entry point, polling loop, graceful shutdown
+├── server.ts     # HTTP (Bun.serve :8080): /, /health, /api/context — base del dashboard
+├── secrets.ts    # Lee los secrets de la app Secrets de CIAB → process.env
+├── healthcheck.ts # checkRateFreshness(): ¿la DB sigue recibiendo tasas?
+├── context.ts    # CLI: imprime buildContext() (dev local / bottle app ssh)
 ├── types.ts      # Definiciones de tipos TypeScript + helper estimateDeelMxn()
-├── config.ts     # Carga de .env y utilidades de fecha
+├── config.ts     # Carga de env, resolveDbPath() y utilidades de fecha
 ├── database.ts   # Capa de datos con bun:sqlite
 ├── exchange.ts   # Cliente de Open Exchange Rates API
 ├── stats.ts      # Motor estadístico (SMA, EMA, volatilidad, momentum)
@@ -73,7 +77,7 @@ Deel cobra al cambiar USD→MXN:
 | `/history` | Historial de cambios (últimos 12) |
 | `/stats` | Estadísticas acumuladas |
 | `/month` | Resumen del mes actual |
-| `/analyze` | Análisis AI del tipo de cambio (roto en Docker → usar la skill del Mac) |
+| `/analyze` | Análisis AI del tipo de cambio (roto en el contenedor → usar la skill del Mac) |
 | `/config` | Ver configuración actual |
 | `/set_threshold <pct>` | Cambiar umbral de alerta |
 | `/set_spread <pct>` | Cambiar spread de Deel |
@@ -82,33 +86,38 @@ Deel cobra al cambiar USD→MXN:
 
 ## Setup
 
-1. Copiar `.env.example` a `.env`
-2. Obtener token de bot en Telegram vía @BotFather
-3. Obtener chat ID vía @userinfobot
-4. Registrar app en https://openexchangerates.org/signup/free
-5. Llenar las variables en `.env`
+1. Obtener token de bot en Telegram vía @BotFather
+2. Obtener chat ID vía @userinfobot
+3. Registrar app en https://openexchangerates.org/signup/free
+4. En CIAB: guardar los 3 valores en la app Secrets (ver DEPLOY.md)
+5. En local: copiar `.env.example` a `.env` y llenarlo
 
-### Docker (deploy actual)
+### CIAB (deploy actual)
 
-El deploy es por git: se empuja a GitHub y el VPS jala y reconstruye.
-**El runbook completo está en [DEPLOY.md](DEPLOY.md)** — instalación desde cero,
+El bot es una app de Cloud in a Bottle: CIAB clona el repo de GitHub, construye
+el `Dockerfile` con Podman y lo corre según `cloudinabottle.toml`. No hay
+auto-deploy: tras un push, "update" en la página de la app (o
+`bottle app reload dollar-check --update --wait`).
+**El runbook completo está en [DEPLOY.md](DEPLOY.md)** — crear la app, secrets,
 respaldos, decisiones de diseño y troubleshooting.
-
-```bash
-bash scripts/deploy.sh          # desde el Mac: push + pull remoto + rebuild
-bash scripts/install.sh         # en el VPS: primera instalación
-docker compose logs -f bot      # logs
-docker compose ps               # estado + healthy/unhealthy
-bash scripts/backup.sh          # respaldar el volumen SQLite
-```
 
 Puntos que hay que tener presentes al tocar el código:
 
-- El SQLite vive en el named volume `dollar-check-data`, no en `./data/`.
-  La ruta la fija `DB_PATH` desde el compose.
-- `.env` no está en git; se crea una vez por host.
+- **La app tiene que contestar HTTP.** CIAB sondea `GET /` los primeros 60s;
+  si no responde la marca en error y no la levanta tras un reboot. Por eso
+  `src/index.ts` arranca `startServer()` antes de pedir secrets o crear el bot.
+- **CIAB no inyecta variables propias**, solo `BOTTLE_*`. Los 3 requeridos llegan
+  de la app Secrets como `DOLLAR_CHECK_<NOMBRE>` vía `loadBottleSecrets()`; lo
+  demás usa los defaults de `config.ts` y los `/set_*` persistidos. Una key
+  nueva va en `grants` del manifest y en `SECRET_KEYS` de `src/secrets.ts`.
+- El SQLite vive en `BOTTLE_SQLITE_MAIN` (`resolveDbPath()`), dentro del
+  directorio que respalda CIAB. El contenedor corre como root a propósito
+  (mounts `:idmap`); no agregar `USER` ni `VOLUME` al `Dockerfile`.
+- `.env` no está en git y solo sirve fuera de CIAB.
 - Solo puede haber **una** instancia viva: dos long-pollers con el mismo token
-  dan 409 en Telegram.
+  dan 409 en Telegram. Ojo al correr `bun run dev` con el token de producción.
+- Todas las rutas HTTP quedan detrás del login de owner de CIAB. El router le
+  reenvía a la app el `Authorization` del owner: no loguear headers.
 - **`/analyze` no funciona dentro del contenedor**: la imagen no trae el CLI de
   `claude` que invoca `src/analyze.ts` vía `Bun.spawn`. El reemplazo es la skill
   `/analyze` de Claude Code (ver abajo).
@@ -117,25 +126,24 @@ Puntos que hay que tener presentes al tocar el código:
 
 `scripts/{setup,start,stop,restart,status,logs}.sh` y
 `com.dollarcheck.bot.plist` son del deploy anterior con launchd en el Mac
-Studio. Se conservan como referencia; no correrlos en paralelo con el
-contenedor.
+Studio. Se conservan como referencia; no correrlos en paralelo con la app de
+CIAB. El deploy intermedio con Docker Compose se retiró (queda en el historial
+de git).
 
 ### Skill `/analyze` (reemplazo del comando del bot)
 
 Vive en `.claude/skills/analyze/SKILL.md` y está versionada con el repo. Desde
-Claude Code en el Mac, `/analyze` trae el snapshot de datos del VPS y hace el
-análisis del lado del cliente:
+Claude Code en el Mac, `/analyze` trae el snapshot de datos de la app en CIAB y
+hace el análisis del lado del cliente:
 
 ```bash
-ssh luis@46.225.30.60 'docker exec dollar-check bun run src/context.ts'
+bottle curl https://dollar-check.<zona>/api/context
 ```
 
-`src/context.ts` imprime el mismo contexto que `buildContext()` le pasaba a la
-AI dentro del bot (solo lectura del SQLite; no consulta OXR). El prompt del
+`GET /api/context` devuelve el mismo contexto que `buildContext()` le pasaba a
+la AI dentro del bot (solo lectura del SQLite; no consulta OXR). El prompt del
 analista es el mismo `ANALYSIS_SYSTEM_PROMPT` de `src/analyze.ts`, así que la
 respuesta es equivalente a la del viejo `/analyze` de Telegram.
-
-Si `src/context.ts` cambia, hay que redesplegar para que exista en el contenedor.
 
 ### Desarrollo
 ```bash
@@ -143,6 +151,9 @@ bun run dev
 ```
 
 ## Variables de Entorno
+
+En CIAB los 3 requeridos llegan de la app Secrets (`DOLLAR_CHECK_TELEGRAM_BOT_TOKEN`,
+etc.) y el resto usa su default; en local todo sale de `.env`.
 
 | Variable | Requerida | Default | Descripción |
 |----------|-----------|---------|-------------|
@@ -157,13 +168,15 @@ bun run dev
 | `DEFAULT_SPREAD_PERCENT` | No | 0.75 | Spread de Deel en % |
 | `DEFAULT_FEE_USD` | No | 106.65 | Tarifa de cambio de Deel en USD |
 | `TZ` | No | America/Mexico_City | Zona horaria |
-| `DB_PATH` | No | data/dollar-check.db | Ruta del SQLite (Docker: `/app/data/dollar-check.db`) |
+| `DB_PATH` | No | data/dollar-check.db | Ruta del SQLite fuera de CIAB |
+| `PORT` | No | 8080 | Puerto HTTP (debe coincidir con `port` del manifest) |
+| `BOTTLE_*` | — | — | Los inyecta CIAB: `BOTTLE_SQLITE_MAIN` (gana a `DB_PATH`), `BOTTLE_ROUTER_URL` y `BOTTLE_APP_TOKEN` (secrets) |
 
 ## Datos Importantes
 
 - Cada centavo en el tipo de cambio equivale a ~$60 MXN con un sueldo de ~$6,000 USD
 - Deel cobra ~$106.65 USD de tarifa + ~0.75% de spread sobre la tasa de mercado
 - El plan gratuito de OXR actualiza cada hora, suficiente para decisiones a nivel de días
-- La base de datos SQLite se guarda en `./data/` y persiste entre reinicios
-- El bot corre en Docker con `restart: unless-stopped` (se reinicia automáticamente)
+- La base de datos SQLite persiste entre reinicios (en CIAB, en el directorio de datos de la app)
+- CIAB corre el contenedor con `restart=unless-stopped` y lo levanta tras un reboot
 - Usar `/seed 30` al iniciar por primera vez para tener contexto histórico

@@ -1,9 +1,7 @@
-# syntax=docker/dockerfile:1
-
 # ============================================
 # Dollar Check Bot - Container image
 # Contexto de build: la raíz de este repo.
-# Target de producción: VPS Linux (amd64 o arm64).
+# Target: app de Cloud in a Bottle (Podman rootless). Ver cloudinabottle.toml.
 # ============================================
 
 # ---- deps: resuelve dependencias de produccion, en capa cacheada aparte ----
@@ -22,8 +20,7 @@ FROM oven/bun:1-alpine AS runtime
 RUN apk add --no-cache tzdata
 
 ENV TZ=America/Mexico_City \
-    NODE_ENV=production \
-    DB_PATH=/app/data/dollar-check.db
+    NODE_ENV=production
 
 WORKDIR /app
 
@@ -31,18 +28,14 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
 
-# /app/data es el mountpoint del SQLite. Debe existir y pertenecer al usuario
-# no-root ANTES de declarar el volumen: Docker copia estos permisos al crear
-# un named volume vacio, que es lo que hace que funcione en Linux sin tocar uids.
-RUN mkdir -p /app/data && chown -R bun:bun /app
+# Corre como root del contenedor a proposito: CIAB monta /data/app_data con
+# :idmap y ahi se ve como root, asi que un USER no-root no podria escribir el
+# SQLite. Con Podman rootless ese root es el usuario sin privilegios `host`.
+#
+# Sin VOLUME: crearia un volumen anonimo fuera del backup de CIAB (el SQLite
+# va en BOTTLE_SQLITE_MAIN). Sin HEALTHCHECK: Podman construye en formato OCI
+# y lo ignora; la salud se ve en GET /health.
 
-USER bun
-
-VOLUME ["/app/data"]
-
-# Sin HTTP que sondear: la señal de vida es que la DB siga recibiendo tasas.
-HEALTHCHECK --interval=5m --timeout=20s --start-period=2m --retries=3 \
-    CMD ["bun", "run", "src/healthcheck.ts"]
-
-# Sin EXPOSE: la comunicacion con Telegram y OXR es saliente (long polling).
+# HTTP: CIAB lo necesita para dar la app por viva (y en Fase 2, el dashboard).
+EXPOSE 8080
 CMD ["bun", "run", "src/index.ts"]

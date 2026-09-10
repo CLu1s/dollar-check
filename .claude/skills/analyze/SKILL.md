@@ -1,36 +1,43 @@
 ---
 name: analyze
-description: Análisis del tipo de cambio USD/MXN usando los datos vivos del bot en el VPS. Úsala cuando Luis pida /analyze, pregunte si le conviene cambiar el sueldo hoy, si espera, o quiera leer la tendencia del dólar.
+description: Análisis del tipo de cambio USD/MXN usando los datos vivos del bot (app dollar-check en CIAB, en el VPS). Úsala cuando Luis pida /analyze, pregunte si le conviene cambiar el sueldo hoy, si espera, o quiera leer la tendencia del dólar.
 ---
 
-# Análisis del dólar (datos del VPS)
+# Análisis del dólar (datos del bot en CIAB)
 
-Reemplaza al comando `/analyze` del bot de Telegram, que dejó de funcionar al
-mover el deploy a Docker: la imagen no trae el CLI de `claude` que `src/analyze.ts`
-invoca con `Bun.spawn`. Aquí el contenedor solo aporta los datos y **el análisis
-lo haces tú**, en esta sesión.
+Reemplaza al comando `/analyze` del bot de Telegram, que no funciona dentro del
+contenedor: la imagen no trae el CLI de `claude` que `src/analyze.ts` invoca con
+`Bun.spawn`. Aquí la app solo aporta los datos y **el análisis lo haces tú**, en
+esta sesión.
 
 ## 1. Traer el snapshot
 
-Un solo comando. `src/context.ts` imprime exactamente el mismo contexto que
-`buildContext()` le pasaba a la AI dentro del bot:
+Un solo comando. `GET /api/context` devuelve exactamente el mismo contexto que
+`buildContext()` le pasaba a la AI dentro del bot. `bottle curl` (CLI de Cloud
+in a Bottle) le pone el token de owner, porque la ruta está detrás del login:
 
 ```bash
-ssh -o ConnectTimeout=10 "${VPS_USER:-luis}@${VPS_HOST:-46.225.30.60}" \
-  'docker exec dollar-check bun run src/context.ts'
+bottle curl https://dollar-check.<zona>/api/context
 ```
 
-Es de solo lectura: abre el SQLite del volumen, no toca OXR ni gasta cuota de la API.
+`<zona>` es el dominio de la instancia de CIAB de Luis. Si todavía aparece como
+`<zona>` en este archivo, pregúntaselo una vez y reemplázalo aquí.
+
+Sin el CLI, lo mismo con curl y un token de `bottle tokens create`:
+`curl -fsS --max-redirs 0 -H "Authorization: Bearer $BOTTLE_TOKEN" https://dollar-check.<zona>/api/context`.
+
+Es de solo lectura: lee el SQLite de la app, no toca OXR ni gasta cuota de la API.
 
 ### Si falla
 
 | Salida | Qué pasó | Qué hacer |
 |---|---|---|
-| `No such container: dollar-check` | el bot está caído | `ssh … 'cd ~/projects/dollar-check && docker compose ps && docker compose logs --tail 50 bot'` y reportar |
-| `Module not found "src/context.ts"` | el VPS tiene un commit viejo | avisar a Luis que corra `bash scripts/deploy.sh` desde el Mac |
-| timeout / `Connection refused` | VPS o red | reportarlo, no reintentar en bucle |
+| `command not found: bottle` | falta el CLI de CIAB en el Mac | avisar a Luis (https://cloudinabottle.org/docs/operation/cli.html) o usar la variante con curl |
+| redirect / HTML de `/login` | sin sesión de owner o token vencido | avisar a Luis que renueve la sesión del CLI o el token |
+| `503 el bot aún no arranca` | la app está arrancando o se trabó leyendo secrets | esperar un minuto; si sigue, que Luis revise los logs de la app en CIAB |
+| 404 / timeout / `Connection refused` | la app no existe, está parada o el VPS no responde | reportarlo, no reintentar en bucle |
 | contexto sin `TASAS DIARIAS` | base vacía | pedirle a Luis que mande `/seed 30` al bot en Telegram |
-| contexto sin `ÚLTIMO CAMBIO REGISTRADO` | el VPS no tiene historial de `/changed` | analiza igual, pero di explícitamente que no hay referencia real contra la cual comparar los MXN |
+| contexto sin `ÚLTIMO CAMBIO REGISTRADO` | la app no tiene historial de `/changed` | analiza igual, pero di explícitamente que no hay referencia real contra la cual comparar los MXN |
 
 No inventes el snapshot ni lo sustituyas por la base local de `./data/` sin
 decirlo: esa copia es vieja y llevaría a una recomendación equivocada.

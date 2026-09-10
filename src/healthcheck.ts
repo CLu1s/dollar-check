@@ -1,42 +1,42 @@
 // ============================================
-// Dollar Check Bot - Container healthcheck
+// Dollar Check Bot - Health check
 // ============================================
-// El bot no expone HTTP, así que la señal de vida es la propia base de datos:
-// si sigue registrando tasas, está haciendo su trabajo. Exit 0 = healthy.
+// La señal de vida es la propia base de datos: si sigue registrando tasas, el
+// bot está haciendo su trabajo. Lo expone GET /health (src/server.ts).
 
-import { Database } from "bun:sqlite";
+import { getDb } from "./database";
 
-const dbPath = process.env.DB_PATH || "data/dollar-check.db";
-const pollMinutes = parseInt(process.env.POLL_INTERVAL_MINUTES || "60");
+export interface HealthStatus {
+  ok: boolean;
+  /** Minutos desde la última tasa registrada; null si aún no hay ninguna. */
+  last_rate_age_minutes: number | null;
+  message: string;
+}
 
-// Tolera un par de polls perdidos (caídas de OXR) antes de marcar unhealthy.
-const maxAgeSeconds = pollMinutes * 60 * 3;
+export function checkRateFreshness(pollMinutes: number): HealthStatus {
+  // Tolera un par de polls perdidos (caídas de OXR) antes de marcar unhealthy.
+  const maxAgeMinutes = pollMinutes * 3;
 
-try {
-  const db = new Database(dbPath, { readonly: true });
-  const row = db
+  const row = getDb()
     .query("SELECT MAX(created_at) AS last FROM exchange_rates")
     .get() as { last: string | null } | null;
-  db.close();
 
   if (!row?.last) {
-    console.error("healthcheck: aún no hay tasas registradas");
-    process.exit(1);
+    return { ok: false, last_rate_age_minutes: null, message: "aún no hay tasas registradas" };
   }
 
   // created_at lo escribe SQLite con datetime('now'), siempre en UTC.
-  const ageSeconds = (Date.now() - Date.parse(`${row.last.replace(" ", "T")}Z`)) / 1000;
+  const ageMinutes = Math.round(
+    (Date.now() - Date.parse(`${row.last.replace(" ", "T")}Z`)) / 60_000
+  );
 
-  if (ageSeconds > maxAgeSeconds) {
-    console.error(
-      `healthcheck: última tasa hace ${Math.round(ageSeconds / 60)}min ` +
-      `(máximo ${maxAgeSeconds / 60}min)`
-    );
-    process.exit(1);
+  if (ageMinutes > maxAgeMinutes) {
+    return {
+      ok: false,
+      last_rate_age_minutes: ageMinutes,
+      message: `última tasa hace ${ageMinutes}min (máximo ${maxAgeMinutes}min)`,
+    };
   }
 
-  console.log(`healthcheck: ok (última tasa hace ${Math.round(ageSeconds / 60)}min)`);
-} catch (error) {
-  console.error("healthcheck: error:", error);
-  process.exit(1);
+  return { ok: true, last_rate_age_minutes: ageMinutes, message: `última tasa hace ${ageMinutes}min` };
 }
