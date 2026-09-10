@@ -152,6 +152,7 @@ export interface DashboardData {
   } | null;
   month: { current: string; exchanged: boolean; days_to_payday: number; last_week: boolean };
   daily: DailyPoint[]; // últimos 365 días, del más viejo al más nuevo
+  intraday: { timestamp: number; rate: number }[]; // lecturas de los últimos 7 días, una por timestamp, de la más vieja a la más nueva
   history: DashboardHistoryRow[]; // una fila por mes, del más reciente al más viejo
   totals: {
     count: number;

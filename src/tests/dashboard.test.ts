@@ -204,6 +204,20 @@ describe("buildDashboard", () => {
     expect(data.daily.map((d) => d.avg)).toEqual([18.0]);
   });
 
+  test("lecturas sueltas de los últimos 7 días para los rangos de 24 h y 7 días", () => {
+    const now = Date.UTC(2026, 8, 10, 18);
+    const t = now / 1000;
+    saveRate(17.9, t - 8 * 86400); // fuera
+    saveRate(18.1, t - 2 * 86400);
+    saveRate(18.2, t - 3600);
+    saveRate(18.2, t - 3600); // la misma lectura guardada dos veces (reinicio o /refresh)
+
+    expect(buildDashboard(settings, now).intraday).toEqual([
+      { timestamp: t - 2 * 86400, rate: 18.1 },
+      { timestamp: t - 3600, rate: 18.2 },
+    ]);
+  });
+
   test("mes, días al pago y última semana, en hora de México", () => {
     const sep10 = buildDashboard(settings, Date.UTC(2026, 8, 10, 18)).month;
     expect(sep10).toEqual({ current: "2026-09", days_to_payday: 20, last_week: false, exchanged: false });

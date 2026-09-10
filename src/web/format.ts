@@ -53,7 +53,25 @@ export function addDays(ymd: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** "14:05" en la zona de la config. */
-export function timeIn(epochMs: number, tz: string): string {
-  return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: tz }).format(epochMs);
+/** Formateador de instantes (epoch en ms) en la zona de la config; uno por zona. */
+function inZone(options: Intl.DateTimeFormatOptions): (epochMs: number, tz: string) => string {
+  const byZone = new Map<string, Intl.DateTimeFormat>();
+  return (epochMs, tz) => {
+    let fmt = byZone.get(tz);
+    if (!fmt) byZone.set(tz, (fmt = new Intl.DateTimeFormat("es-MX", { ...options, timeZone: tz })));
+    return fmt.format(epochMs);
+  };
 }
+
+/** "10:37 a.m." */
+export const timeIn = inZone({ hour: "2-digit", minute: "2-digit" });
+/** "4 p.m.", para ticks */
+export const hourIn = inZone({ hour: "numeric" });
+/** "mié 10" */
+export const weekdayIn = inZone({ weekday: "short", day: "numeric" });
+/** "mié, 10 sept, 14:00" */
+export const dateTimeIn = inZone({ weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+const hourOfDay = inZone({ hour: "numeric", hourCycle: "h23" });
+/** Hora local 0–23, para poner los ticks en horas redondas. */
+export const localHour = (epochMs: number, tz: string) => Number(hourOfDay(epochMs, tz));

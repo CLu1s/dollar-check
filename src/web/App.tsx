@@ -72,6 +72,8 @@ function Dashboard({ data }: { data: DashboardData }) {
           <KpiRow data={data} />
           <RateChart
             daily={data.daily}
+            intraday={data.intraday}
+            timezone={settings.timezone}
             breakEven={data.break_even_rate}
             lastMonth={data.last_exchange?.month ?? null}
             mxnPerRateUnit={data.today.net_usd * (1 - settings.spread_percent / 100)}

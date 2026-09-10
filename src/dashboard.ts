@@ -27,8 +27,11 @@ import { checkRateFreshness } from "./healthcheck";
 /** Días con tasas que necesita un mes para comparar un cambio contra su promedio. */
 export const MIN_DAYS_FOR_MONTH_AVG = 10;
 
-/** Lo que cubre la gráfica; el historial usa todas las tasas. */
+/** Lo que cubre la gráfica diaria; el historial usa todas las tasas. */
 const CHART_DAYS = 365;
+
+/** Lecturas sueltas (una por hora) para los rangos cortos de la gráfica: 24 h y 7 días. */
+const INTRADAY_DAYS = 7;
 
 /** Epoch en segundos → "YYYY-MM-DD" en la zona `tz`. */
 export function localDateOf(tz: string): (epochSeconds: number) => string {
@@ -153,8 +156,10 @@ export function buildDashboard(settings: BotSettings, now: number = Date.now()):
 
   const latest = getLatestRate();
   const last = getLastSalaryExchange();
-  const daily = groupDaily(getUniqueRates(), tz);
+  const rates = getUniqueRates();
+  const daily = groupDaily(rates, tz);
   const byMonth = monthlyAverages(daily);
+  const intradayFrom = Math.floor(now / 1000) - INTRADAY_DAYS * 86400;
 
   let today: DashboardData["today"] = null;
   if (latest) {
@@ -232,6 +237,7 @@ export function buildDashboard(settings: BotSettings, now: number = Date.now()):
     trend,
     month: { ...month, exchanged: isMonthExchanged(month.current) },
     daily: daily.filter((d) => d.date > chartFrom),
+    intraday: rates.filter((r) => r.timestamp >= intradayFrom),
     history,
     totals: summarize(history),
   };

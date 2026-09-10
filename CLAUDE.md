@@ -100,6 +100,10 @@ Las acciones (`/changed`, `/set_*`) siguen en Telegram.
   `src/tests/dashboard.test.ts`; el front solo pinta el JSON de `/api/dashboard`.
 - **Días y meses se agrupan en la zona de la config** (`America/Mexico_City`),
   no en UTC como `getDailyRates()`: lo de 18:00–24:00 caería en el día siguiente.
+- **Rangos de la gráfica:** 24 h y 7 días (default) pintan cada lectura de OXR
+  (`intraday`, una por hora) porque sirven para decidir el día del cambio;
+  30/90 días y 1 año pintan el promedio diario (`daily`) y sirven para comparar
+  meses. `?rango=24h|7d|30d|90d|365d` en la URL fija el rango (para marcadores).
 - **El historial es una fila por mes** (la de `id` más alto) y se ordena por
   `month`. La columna `rate` de un `/changed` diferido es la tasa de OXR del
   momento del comando, así que el dashboard no la usa.
